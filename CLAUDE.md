@@ -44,7 +44,7 @@ One-way gates, the RE2 nod, are a later mechanic. They teach the directed versio
 
 ## Controls
 
-Tank controls. W/↑ walks forward, S/↓ steps back, A/D or ←/→ turn, Shift runs, Q quick-turns 180°, and E or Space interacts (hold E to turn a valve). F fires the shotgun, R reloads, and M toggles the developer map. Opening the page with `#debug` exposes `window.SG` (`S` and `level`) for testing.
+Tank controls. W/↑ walks forward, S/↓ steps back, A/D or ←/→ turn, Shift runs, Q quick-turns 180°, and E or Space interacts (hold E to turn a valve). F fires the shotgun, R reloads, and M toggles the developer map. Opening the page with `#debug` exposes `window.SG` (`S`, `level`, `collapseHalf`, `fire`, `openGate` and `step(n)`) for testing. `SG.step(n)` advances n fixed frames and draws once; use it for screenshots because the loop doesn't run while the browser pane is hidden.
 
 ## Current structure
 
@@ -60,13 +60,14 @@ Script sections, in file order (search for the `/* ---------- ... ---------- */`
 | Seeded random | Deterministic RNG, so procedural textures and props are stable between loads. |
 | PS1 materials | `psx()` injects vertex snapping into any material. Procedural canvas textures. Material palette `M`. |
 | Renderer | 320×240 render target, then a post shader (dither, quantize, vignette, fade). Fog, lights, and 4:3 letterbox fitting. |
-| Static world | Water plane and distant colonnade. |
+| Static world | Water plane (12 fps stepped swell), two colonnade rings and a flat moon disc. |
 | Player | `buildHunter()` builds the rig. `solveArm()` is two-bone IK. `poseHunter()` animates gait, gun carry and death collapse. |
 | Level construction | `buildLevel()` turns `LEVEL` into rooms (floor, pillars, sconce, drain hatch, escape beam) and bridges (segmented halves, gate with portcullis, valve wheel and lantern, side camera). |
 | Geometry queries | `walkable()` handles collision against rooms, standing bridge halves and closed gates. `locate()` reports which room or bridge a point is on. |
 | Pursuer | `buildPursuer()`, `resetPursuer()` and `updatePursuer()`: a tall drowned figure wading in the water, with states dormant, hunt and stagger, plus the contact rule (knockback, or death if stranded). |
 | Audio | Procedural Web Audio helpers. |
 | State | Global `S` (player position, heading, mode, falling debris, consumed count, stranded flag, ammo, route log), HUD helpers and `reset()`. |
+| Particles | `FX`: pooled dust, chips, spray, smoke and water ripples. Hooked into falling debris, gates, the shotgun and pursuer footsteps. |
 | Mechanics | `collapseHalf`, `consume` (also drops the gate and lantern into the water), `openGate`, `fire`, `startReload`, `setStranded`, `die` and `win`. |
 | Input | Key handling. Mode flow is title, then play, then dying or won. |
 | Update | The per-frame loop: scenery animation, valve hold, tank movement, crossing and collapse logic, the stranded check, the escape hatch, prompts, camera zone switching and pose. |
@@ -86,8 +87,16 @@ The win condition is all valves turned. The room you're standing in then opens a
    - `LEVEL.pursuer = {spawn, speed, wakeDelay}` keeps the pursuer data-driven. It wakes after `wakeDelay`, when you come within 14, or when you're stranded.
    - `S.route` logs rooms entered and bridges crossed (`{bridge, from, to}`) for the step 5 replay. It isn't displayed yet.
    - Tunable numbers: pursuer speeds, contact radius 1.9, stagger/grace times, shot cone and range, reload time.
-   - Known placeholders: the pursuer model is crude and clips through room bases when it reaches you (it ignores geometry). Step 3 polish.
-3. Further PS1 polish.
+   - Known placeholders (fixed in step 3): crude pursuer model and base clipping.
+3. ~~Further PS1 polish.~~ **Built, awaiting Lucas's playtest.** Decisions and why:
+   - **Affine texture mapping** (`AFFINE` flag in `psx()`): uv*w and w varyings divided in the fragment shader, because GLSL ES 1.0 has no `noperspective`. Set the flag false if r128 chunks ever break it.
+   - **The pursuer climbs onto rooms.** Over a room footprint its Y lerps to the floor; over open water it wades at `WATER_Y`. Contact stays planar distance, so the death rule is untouched. Rooms are solid, bridges are not.
+   - Pursuer animation runs on a stepped 12 fps clock (PS1 keyframes); the hunter does not, because his feel matters.
+   - **Each room has a floor inlay with a dot count equal to its index in `LEVEL.rooms`**, so fixed cameras never leave the player unsure where they are. Step 5 can reuse it for graph labels.
+   - **Lights are data, not objects.** `addSrc()` records sources in `level.lights`; `updateLights()` moves a fixed pool of 6 `PointLight`s (`LP`) onto the nearest ones with fades. Constant light count means no shader recompiles. Room sconces and bridge lanterns animate `src.intensity`, not a light.
+   - Audio: generated-impulse reverb, stone vs bridge footsteps, a proximity drone and heartbeat from `audio.threat(v)`, chain clinks on gate open.
+   - Tunables: pool size 6, reverb wet .33, threat range 26, water swell amplitude .1.
+   - Not verified: audio by ear (the sim ran it without errors but nothing was listened to), affine warping on other GPUs, performance on a weak machine, the pursuer's head leaves the top of frame when it stands on a room next to the camera.
 4. Level sequence: 2–3 undirected levels that teach the parity rule. One beat must be "only works if you start in the right room" (exactly two odd vertices). Then a one-way-gate level, then Königsberg (7 bridges, 4 odd rooms).
 5. The death screen's "Why?" and the explainer.
 
