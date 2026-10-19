@@ -1,3 +1,4 @@
+<meta charset="utf-8">
 <title>Seven Gates</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IM+Fell+English+SC&family=IM+Fell+English:ital@0;1&display=swap">
@@ -146,11 +147,17 @@ const R = rng(1736);
 
 /* ---------- PS1 materials: vertex snapping + Gouraud (Lambert is per-vertex in r128) ---------- */
 const snapU = {value:new T.Vector2(160,120)};
+// PS1 interpolated textures affinely (no perspective correction). GLSL ES 1.0 has no `noperspective`, but the
+// hardware divides varyings by w, so passing uv*w and w and dividing in the fragment shader cancels the correction.
+const AFFINE = true;
 function psx(m){
   m.onBeforeCompile = function(s){
     s.uniforms.uSnap = snapU;
-    s.vertexShader = 'uniform vec2 uSnap;\n' + s.vertexShader.replace('#include <project_vertex>',
-      '#include <project_vertex>\n{ vec4 sp = gl_Position; sp.xy = floor(sp.xy/sp.w*uSnap+0.5)/uSnap*sp.w; gl_Position = sp; }');
+    s.vertexShader = 'uniform vec2 uSnap;\nvarying float vAffW;\n' + s.vertexShader.replace('#include <project_vertex>',
+      '#include <project_vertex>\n{ vec4 sp = gl_Position; sp.xy = floor(sp.xy/sp.w*uSnap+0.5)/uSnap*sp.w; gl_Position = sp; }\n'
+      + (AFFINE ? 'vAffW = gl_Position.w;\n#ifdef USE_MAP\nvUv *= gl_Position.w;\n#endif' : 'vAffW = 1.0;'));
+    s.fragmentShader = 'varying float vAffW;\n' + s.fragmentShader.replace('#include <map_fragment>',
+      '#ifdef USE_MAP\nvec4 texelColor = texture2D( map, vUv / vAffW );\ntexelColor = mapTexelToLinear( texelColor );\ndiffuseColor *= texelColor;\n#endif');
   };
   return m;
 }
@@ -187,7 +194,7 @@ const M = {
   coat: lam(0x5a4d58,TX.cloth), dark: lam(0x2a2428), skin: lam(0xc9b8a2), leather: lam(0x4a3426),
   steel: lam(0x7a7c80), wood: lam(0x5a3a22), flame: glow(0xffb45a), beam: glow(0xd9e6ff),
 };
-M.drown=lam(0x3f4d48,TX.cloth); M.pale=lam(0x9aa89c);
+M.drown=lam(0x3f4d48,TX.cloth); M.pale=lam(0x9aa89c); M.slime=lam(0x34502e);
 M.beam.transparent=true; M.beam.opacity=.35; M.beam.depthWrite=false; M.beam.blending=T.AdditiveBlending;
 
 /* ---------- Renderer: 320x240 internal, dithered and quantized on the way out ---------- */
@@ -215,6 +222,7 @@ scene.fog = new T.Fog(0x060509, 9, 42);
 const camera = new T.PerspectiveCamera(52, 4/3, 0.1, 140);
 scene.add(new T.AmbientLight(0x3a3046, 1.0));
 const moon = new T.DirectionalLight(0x5868a8, .45); moon.position.set(-10,30,-6); scene.add(moon);
+const LP = []; for(let i=0;i<6;i++){ const L=new T.PointLight(0xffa458,0,17,1.6); scene.add(L); LP.push({L,src:null,cur:0}); }
 
 function fit(){
   const w = Math.min(innerWidth, innerHeight*4/3), h = w*3/4;
@@ -236,6 +244,13 @@ for(let i=0;i<22;i++){
   box(2.2,26,2.2,M.wall,x,9,z,scene);
   const arch=new T.Mesh(new T.ConeGeometry(1.6,3,4),M.wall); arch.position.set(x,23.5,z); arch.rotation.y=Math.PI/4; scene.add(arch);
 }
+// a taller, farther second ring so the fog has depth to chew through, and a flat moon behind it
+for(let i=0;i<16;i++){
+  const a=i/16*Math.PI*2+R()*.15, r=64+R()*8, hgt=34+R()*14;
+  box(3,hgt,3,M.wall,Math.cos(a)*r*1.25,hgt/2-6,Math.sin(a)*r*.85,scene);
+}
+const moonDisc=new T.Mesh(new T.CircleGeometry(7,10),glow(0x9fb0d8)); moonDisc.material.fog=false;
+moonDisc.position.set(-60,70,-60); moonDisc.lookAt(0,0,0); scene.add(moonDisc);
 
 /* ---------- Player: hunter's coat, tricorn, double-barrel in a low two-handed carry ---------- */
 const UP=new T.Vector3(0,1,0), _a=new T.Vector3(), _b=new T.Vector3(), _q=new T.Vector3(), _m=new T.Matrix4();
@@ -294,6 +309,9 @@ function poseHunter(dt,moving,time){
   const sp=Math.abs(moving), amp=Math.min(1,sp/3);
   hr.run+=((sp>4?1:0)-hr.run)*Math.min(1,dt*6);
   S.phase+=dt*sp*2.4;
+  const stp=Math.floor(S.phase/Math.PI); // a footfall each half stride
+  if(sp>0 && stp!==S.lastStep && S.mode==='play') audio.step(!locate(S.x,S.z).room, .6+.4*hr.run);
+  S.lastStep=stp;
   const ph=S.phase, sw=sp?Math.sin(ph):0, cw=sp?Math.cos(ph):0;
   const la=amp*(.5+.25*hr.run);
   hr.legL.hip.rotation.x=-sw*la; hr.legR.hip.rotation.x=sw*la;
@@ -328,6 +346,10 @@ function buildLevel(){
   if(level) scene.remove(level.group);
   const G = new T.Group(); scene.add(G);
   const rooms = {};
+  // light sources are plain data; a small fixed pool of real PointLights is moved onto the nearest ones each frame
+  // (a constant light count means no shader recompiles, and Step 4's bigger levels cost the same)
+  const lights = []; for(const p of LP){ p.src=null; p.cur=0; p.L.intensity=0; }
+  const addSrc=(x,y,z,color,range,decay,intensity)=>{ const s={x,y,z,color,range,decay,intensity}; lights.push(s); return s; };
   for(const k in LEVEL.rooms){
     const d = LEVEL.rooms[k];
     const g = new T.Group(); g.position.set(d.x,0,d.z); G.add(g);
@@ -343,7 +365,9 @@ function buildLevel(){
     for(const c of corners){const dd=Math.hypot(d.x+c[0]*4-d.cam[0],d.z+c[1]*4-d.cam[2]);if(dd>bd){bd=dd;best=c;}}
     const fl=box(.16,.26,.16,M.flame,best[0]*3.7,2.75,best[1]*3.7,g);
     box(.3,.08,.3,M.iron,best[0]*3.7,2.58,best[1]*3.7,g);
-    const light=new T.PointLight(0xffa458,1.7,17,1.6); light.position.set(best[0]*3.2,2.9,best[1]*3.2); g.add(light);
+    const light=addSrc(d.x+best[0]*3.2,2.9,d.z+best[1]*3.2,0xffa458,17,1.6,1.7);
+    // slime band at the waterline
+    box(7.7,.55,7.7,M.slime,0,-3.2,0,g);
     const hatch=box(1.7,.06,1.7,M.iron,0,.03,0,g);
     const beam=new T.Mesh(new T.CylinderGeometry(.75,.9,14,6,1,true),M.beam); beam.position.y=7; beam.visible=false; g.add(beam);
     rooms[k]={key:k,x:d.x,z:d.z,name:d.name,cam:d.cam,group:g,light,flame:fl,base:1.7,hatch,beam,bridges:[],seed:R()*100};
@@ -367,7 +391,11 @@ function buildLevel(){
         sg.userData.t=tc; halves[h].segs.push(sg);
       }
     });
+    // ruined piers under each half: they outlast the span that falls
+    for(const tp of [(tStart+mid)/2,(mid+tEnd)/2]) box(2.1,6,.9,M.base,0,-3.4,tp,g);
     const gate=new T.Group(); gate.position.z=mid; g.add(gate);
+    for(const cx of [-1.1,.1,1.2]){ const lk=Math.round(1.2+R()*1.1); // chains hanging from the lintel
+      for(let q=0;q<lk*3;q++) box(.07,.15,.07,M.iron,cx,3.15-q*.17,0,gate); }
     box(.46,3.3,.46,M.wall,1.75,1.65,0,gate); box(.46,3.3,.46,M.wall,-1.75,1.65,0,gate);
     box(3.96,.46,.56,M.wall,0,3.4,0,gate);
     box(1.3,6,1.3,M.base,0,-3.2,0,gate);
@@ -380,7 +408,7 @@ function buildLevel(){
     box(.06,.68,.06,M.iron,0,0,0,wheel); box(.06,.06,.68,M.iron,0,0,0,wheel);
     box(.3,.12,.12,M.iron,-.2,0,0,wheel);
     const lan=box(.18,.24,.18,M.flame,0,2.88,0,gate);
-    const ll=new T.PointLight(0xffb070,1.1,10,1.7); ll.position.set(0,2.55,0); gate.add(ll);
+    const ll=addSrc(A.x+u.x*mid,2.55,A.z+u.z*mid,0xffb070,10,1.7,1.1);
     // side camera, kept away from the given point
     const mx=A.x+u.x*mid, mz=A.z+u.z*mid;
     if(p.x*(mx-away[0])+p.z*(mz-away[1])<0) p={x:-p.x,z:-p.z};
@@ -391,7 +419,14 @@ function buildLevel(){
     A.bridges.push(br); B.bridges.push(br);
     return br;
   });
-  level={group:G,rooms,bridges,total:bridges.length};
+  level={group:G,rooms,bridges,lights,total:bridges.length};
+}
+function updateLights(dt){
+  const want=level.lights.map(s=>({s,d:Math.hypot(s.x-S.x,s.z-S.z)-s.range*.35})).sort((a,b)=>a.d-b.d).slice(0,LP.length).map(o=>o.s);
+  for(const p of LP) if(p.src && !want.includes(p.src)){ p.cur=Math.max(0,p.cur-dt*3); p.L.intensity=p.cur; if(p.cur<=0) p.src=null; }
+  for(const s of want){ if(LP.some(p=>p.src===s)) continue; const p=LP.find(q=>!q.src); if(!p) break;
+    p.src=s; p.cur=0; p.L.position.set(s.x,s.y,s.z); p.L.color.setHex(s.color); p.L.distance=s.range; p.L.decay=s.decay; }
+  for(const p of LP) if(p.src && want.includes(p.src)){ p.cur+=(p.src.intensity-p.cur)*Math.min(1,dt*8); p.L.intensity=p.cur; }
 }
 
 /* ---------- Geometry queries ---------- */
@@ -429,12 +464,31 @@ function buildPursuer(){
   const head=new T.Group(); head.position.set(0,7.35,.25); body.add(head);
   box(.75,.85,.75,M.pale,0,0,0,head);
   box(.14,.1,.1,M.flame,-.2,.08,.38,head); box(.14,.1,.1,M.flame,.2,.08,.38,head);
-  const arms=[-1,1].map(sx=>{
+  const jaw=box(.6,.3,.55,M.pale,0,-.62,.12,head);       // slack lower jaw, hangs open
+  box(.5,.06,.06,M.dark,0,-.47,.4,head);                 // dark mouth gap
+  const arms=[-1,1].map((sx,i)=>{
     const g=new T.Group(); g.position.set(sx*1.1,6.5,0); body.add(g);
-    limb(3.4,.3,M.pale,g).rotation.x=Math.PI; // hangs down from the shoulder
+    const len=i?3.4:4.1;                                  // uneven arms: one too long
+    const m=limb(len,.3,M.pale,g); m.rotation.x=Math.PI; // hangs down from the shoulder
+    box(.34,.5,.2,M.pale,0,-len-.2,0,g);                 // splayed hand
     return g;
   });
-  return {root,body,head,arms};
+  // tattered shroud: strips hanging from the shoulders, swayed each frame
+  const rags=[];
+  for(let i=0;i<7;i++){
+    const g=new T.Group(); g.position.set(-1.1+i*.37,6.3,.55); body.add(g);
+    const len=1.6+R()*2.4; const m=limb(len,.16,M.drown,g); m.scale.z=.35; m.rotation.x=Math.PI;
+    rags.push({g,ph:R()*6});
+  }
+  // weed trailing off the back, drifting in the current
+  const weeds=[];
+  for(let i=0;i<4;i++){
+    const g=new T.Group(); g.position.set(-.5+i*.33,3.2,-.55); body.add(g);
+    const m=limb(2.2+R()*1.5,.12,M.base,g); m.scale.z=.3; m.rotation.x=Math.PI*.9;
+    weeds.push({g,ph:R()*6});
+  }
+  root.visible=true;
+  return {root,body,head,jaw,arms,rags,weeds};
 }
 const pursuer=buildPursuer(); scene.add(pursuer.root);
 const PUR_DEFAULT={speed:1.6,strandedSpeed:3.0,contact:1.9,wakeDelay:14,wakeRange:14};
@@ -443,7 +497,7 @@ function resetPursuer(){
   pursuer.root.visible=!!lp;
   if(!lp){ S.pur=null; return; }
   const cfg=Object.assign({},PUR_DEFAULT,lp);   // read per reset, so a new LEVEL takes effect
-  const P=S.pur={cfg,x:cfg.spawn[0],z:cfg.spawn[1],state:'dormant',stagger:0,slow:0,pause:0,rise:0,step:0,groan:3};
+  const P=S.pur={cfg,x:cfg.spawn[0],z:cfg.spawn[1],y:WATER_Y,state:'dormant',stagger:0,slow:0,pause:0,rise:0,step:0,groan:3};
   pursuer.root.position.set(P.x,WATER_Y-8,P.z);
 }
 // Pushes the player up to `max` units along (ux,uz), in small steps so a closed gate can't be jumped.
@@ -452,7 +506,7 @@ function shove(ux,uz,max){
 }
 function updatePursuer(dt,time){
   const P=S.pur;
-  if(!P){ if(S.mode==='play'&&S.stranded) die(); return; }  // no pursuer on this level: stranding kills directly
+  if(!P){ audio.threat(0); if(S.mode==='play'&&S.stranded) die(); return; }  // no pursuer on this level: stranding kills directly
   const cfg=P.cfg;
   const dx=S.x-P.x,dz=S.z-P.z,dist=Math.hypot(dx,dz)||1e-3;
   if(S.mode==='play'){
@@ -467,7 +521,7 @@ function updatePursuer(dt,time){
     if(P.state==='hunt' && P.pause<=0){
       const v=(S.stranded?cfg.strandedSpeed:cfg.speed)*(P.slow>0?.5:1);
       const st=Math.min(dist,v*dt); P.x+=dx/dist*st; P.z+=dz/dist*st;
-      P.step+=st; if(P.step>2.2){ P.step=0; audio.splash(.4); }
+      P.step+=st; if(P.step>2.2){ P.step=0; audio.splash(.4); if(P.y<WATER_Y+.5) FX.splash(P.x,P.z,5); }
       P.groan-=dt; if(P.groan<=0){ P.groan=4+Math.random()*3; if(dist<24) audio.groan(); }
     }
     // contact
@@ -482,22 +536,38 @@ function updatePursuer(dt,time){
       }
     }
   }
+  audio.threat(S.mode==='play'&&P.state!=='dormant' ? Math.max(0,1-dist/26) : 0);
   // look and motion
   P.rise+=((P.state==='dormant'?0:1)-P.rise)*Math.min(1,dt*1.2);
-  pursuer.root.position.set(P.x,WATER_Y-(1-P.rise)*8+Math.sin(time*1.6)*.08,P.z);
+  // it ignores the bridges but not the rooms: over a room footprint it hauls itself up onto the floor
+  // instead of clipping through the base; the contact rule is untouched (still planar distance)
+  let onRoom=false;
+  for(const k in level.rooms){const r=level.rooms[k]; if(Math.abs(P.x-r.x)<H+.5&&Math.abs(P.z-r.z)<H+.5){onRoom=true;break;}}
+  P.y+=((onRoom?0:WATER_Y)-P.y)*Math.min(1,dt*4);
+  const tt=Math.floor(time*12)/12; // stepped animation clock: low-framerate PS1 keyframes
+  pursuer.root.position.set(P.x,P.y-(1-P.rise)*8+Math.sin(tt*1.6)*.08,P.z);
   pursuer.root.rotation.y=Math.atan2(dx,dz);
   const sag = P.stagger>0 ? -.22 : .1;
   pursuer.body.rotation.x += (sag-pursuer.body.rotation.x)*Math.min(1,dt*6);
-  const sw=Math.sin(time*2.2);
+  const sw=Math.sin(tt*2.2);
   pursuer.arms[0].rotation.x=sw*.18+(P.state==='hunt'?-.5:0);
   pursuer.arms[1].rotation.x=-sw*.18+(P.state==='hunt'?-.5:0);
-  pursuer.head.rotation.z=Math.sin(time*1.1)*.12;
+  pursuer.head.rotation.z=Math.sin(tt*1.1)*.12;
+  pursuer.jaw.rotation.x=.25+Math.sin(tt*3.1)*.12+(P.state==='hunt'?.25:0);
+  for(const r of pursuer.rags){ r.g.rotation.x=Math.sin(tt*2.6+r.ph)*.18; r.g.rotation.z=Math.sin(tt*1.7+r.ph*2)*.12; }
+  for(const w of pursuer.weeds){ w.g.rotation.x=Math.sin(tt*1.9+w.ph)*.25; w.g.rotation.z=Math.sin(tt*1.3+w.ph*2)*.2; }
 }
 
 /* ---------- Audio ---------- */
 const audio={ctx:null,
   init(){ if(this.ctx) return; try{this.ctx=new (window.AudioContext||window.webkitAudioContext)();}catch(e){return;}
     const c=this.ctx; this.master=c.createGain(); this.master.gain.value=.8; this.master.connect(c.destination);
+    // cistern reverb: a generated stereo impulse (decaying noise), mixed in alongside the dry signal
+    const rl=Math.floor(c.sampleRate*2.4), ir=c.createBuffer(2,rl,c.sampleRate);
+    for(let ch=0;ch<2;ch++){const d=ir.getChannelData(ch); for(let i=0;i<rl;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/rl,2.6);}
+    const cv=c.createConvolver(); cv.buffer=ir; const wet=c.createGain(); wet.gain.value=.33;
+    this.master.connect(cv); cv.connect(wet); wet.connect(c.destination);
+    this.th=0; this.nextBeat=0;
     const len=c.sampleRate*3, buf=c.createBuffer(1,len,c.sampleRate), d=buf.getChannelData(0); let last=0;
     for(let i=0;i<len;i++){const w=Math.random()*2-1; last=(last+.02*w)/1.02; d[i]=last*3.2;}
     this.brown=buf;
@@ -507,7 +577,18 @@ const audio={ctx:null,
     const wn=c.createBuffer(1,c.sampleRate,c.sampleRate), wd=wn.getChannelData(0); for(let i=0;i<wd.length;i++)wd[i]=Math.random()*2-1; this.white=wn;
     this.nextDrip=c.currentTime+1;
   },
-  tick(){ const c=this.ctx; if(!c) return; if(c.currentTime>this.nextDrip){ this.nextDrip=c.currentTime+1.2+Math.random()*3.5; this.drip(); } },
+  tick(){ const c=this.ctx; if(!c) return; if(c.currentTime>this.nextDrip){ this.nextDrip=c.currentTime+1.2+Math.random()*3.5; this.drip(); }
+    if(this.th>.12 && c.currentTime>this.nextBeat){ // heartbeat quickens as the pursuer closes in
+      this.nextBeat=c.currentTime+1.05-this.th*.55; const v=this.th;
+      this.tone(62,34,.14,.28*v); setTimeout(()=>this.tone(55,32,.16,.2*v),170); } },
+  // proximity cue: a low drone whose level follows threat (0..1); created lazily, faded with setTargetAtTime
+  threat(v){ const c=this.ctx; if(!c) return; this.th=v;
+    if(!this.drone){ const o=c.createOscillator(),lp=c.createBiquadFilter(),g=c.createGain(); o.type='sawtooth'; o.frequency.value=41;
+      lp.type='lowpass'; lp.frequency.value=140; g.gain.value=0; o.connect(lp); lp.connect(g); g.connect(this.master); o.start(); this.drone=g; }
+    this.drone.gain.setTargetAtTime(v*.2,c.currentTime,.2); },
+  step(bridge,vol){ // stone in rooms; a hollower knock on the bridge slabs
+    this.noise(.1,bridge?520:900,120,.1*vol); if(bridge) this.tone(95,55,.12,.07*vol); },
+  chain(){ for(let i=0;i<6;i++) setTimeout(()=>this.tone(2200+Math.random()*1400,1400,.05,.035,'square'),i*55+Math.random()*30); },
   drip(){ const c=this.ctx,t=c.currentTime,o=c.createOscillator(),g=c.createGain(); const f=900+Math.random()*700;
     o.frequency.setValueAtTime(f,t); o.frequency.exponentialRampToValueAtTime(f*.45,t+.09);
     g.gain.setValueAtTime(.05*(.4+Math.random()*.6),t); g.gain.exponentialRampToValueAtTime(.0001,t+.12);
@@ -535,7 +616,7 @@ const audio={ctx:null,
 const S={mode:'title',x:0,z:0,h:0,hold:0,phase:0,turn:0,zone:'',falling:[],dying:0,escape:null,room:null,shake:0,cap:0,
   stranded:false,stagger:0,grace:0,playT:0,ammo:0,reserve:0,reloading:false,reload:0,fireT:0,recoil:0,flash:0,holding:false,route:[],pur:null};
 const CLIP=2, RELOAD_T=2.5;   // shells per load, seconds per reload (the level's total comes from LEVEL.shells)
-if(location.hash==='#debug') window.SG={S,get level(){return level;}};
+if(location.hash==='#debug') window.SG={S,get level(){return level;},collapseHalf,fire,openGate};
 const keys={};
 const $=id=>document.getElementById(id);
 
@@ -544,7 +625,7 @@ function reset(){
   const r=level.rooms[LEVEL.start];
   S.x=r.x; S.z=r.z-1; S.h=0; S.hold=0; S.turn=0; S.zone=''; S.falling=[]; S.dying=0; S.escape=null; S.room=null; S.consumed=0;
   S.stranded=false; S.stagger=0; S.grace=0; S.playT=0; S.reserve=Math.max(0,(LEVEL.shells||0)-CLIP); S.ammo=Math.min(CLIP,LEVEL.shells||0); S.reloading=false; S.reload=0; S.fireT=0; S.recoil=0; S.flash=0; S.holding=false; S.route=[];
-  resetPursuer(); renderShells();
+  resetPursuer(); renderShells(); FX.reset();
   postMat.uniforms.fade.value=0;
   $('death').hidden=true; $('death').classList.remove('show'); $('win').hidden=true;
   showCaption('');
@@ -557,12 +638,56 @@ function renderPips(){
 function renderShells(){
   const p=$('shells'); p.innerHTML='';
   for(let i=0;i<CLIP;i++){const s=document.createElement('span');s.className='shell'+(i<S.ammo?'':' off');p.appendChild(s);}
-  $('reserve').textContent='×'+S.reserve;
+  $('reserve').textContent='\u00d7'+S.reserve;
   $('ammo').classList.toggle('reloading',S.reloading);
 }
 let capTimer=0, nameTimer=0;
 function showCaption(t,dur){ $('caption').textContent=t; $('caption').classList.toggle('show',!!t); capTimer=dur||0; }
 function showRoom(name){ $('roomname').textContent=name; $('roomname').classList.add('show'); nameTimer=2.4; }
+
+/* ---------- Particles: pooled dust, chips, spray, smoke and water ripples ---------- */
+const FX=(()=>{
+  const mats={
+    dust:psx(new T.MeshLambertMaterial({color:0x8a8478})), chip:M.wall,
+    spray:psx(new T.MeshBasicMaterial({color:0x8fb4b4})),
+    smoke:psx(new T.MeshBasicMaterial({color:0x6a6a72,transparent:true,opacity:.45,depthWrite:false})),
+  };
+  const kinds={ // size, upward speed, spread, gravity, life, growth per second
+    dust:[.22,1.2,1.4,5,.9,.8], chip:[.3,2.5,2.5,16,1.5,0], spray:[.14,5,1.6,15,.8,0], smoke:[.2,.7,.35,-.2,1.3,2.2],
+  };
+  const geo=new T.BoxGeometry(1,1,1), pool=[], rings=[];
+  for(let i=0;i<96;i++){ const m=new T.Mesh(geo,mats.dust); m.visible=false; scene.add(m); pool.push({m,vx:0,vy:0,vz:0,life:0,max:1,g:0,s:1,grow:0,kind:''}); }
+  const rGeo=new T.RingGeometry(.5,.8,8);
+  for(let i=0;i<8;i++){ const m=new T.Mesh(rGeo,psx(new T.MeshBasicMaterial({color:0x9ec4c4,transparent:true,opacity:.5,depthWrite:false,side:T.DoubleSide})));
+    m.rotation.x=-Math.PI/2; m.visible=false; scene.add(m); rings.push({m,life:0}); }
+  let ri=0;
+  return {
+    n:0,
+    emit(kind,x,y,z,n){
+      const [size,up,spread,g,life,grow]=kinds[kind];
+      for(let c=0;c<n;c++){
+        const p=pool.find(q=>!q.m.visible)||pool[(ri++)%pool.length];
+        p.kind=kind; p.m.material=mats[kind]; p.m.visible=true; p.m.position.set(x,y,z);
+        p.vx=(Math.random()-.5)*spread; p.vz=(Math.random()-.5)*spread; p.vy=up*(.5+Math.random()*.7);
+        p.g=g; p.max=p.life=life*(.7+Math.random()*.6); p.s=size*(.6+Math.random()*.8); p.grow=grow;
+        p.m.scale.setScalar(p.s); p.m.rotation.set(Math.random()*3,Math.random()*3,0);
+      }
+    },
+    ring(x,z){ const r=rings.find(q=>!q.m.visible); if(!r) return; r.life=1.1; r.m.visible=true; r.m.position.set(x,WATER_Y+.25,z); r.m.scale.setScalar(.4); },
+    splash(x,z,n){ this.emit('spray',x,WATER_Y+.3,z,n); this.ring(x,z); },
+    update(dt){
+      for(const p of pool){ if(!p.m.visible) continue;
+        p.life-=dt; p.vy-=p.g*dt; p.m.position.x+=p.vx*dt; p.m.position.y+=p.vy*dt; p.m.position.z+=p.vz*dt;
+        p.m.scale.setScalar(p.s*(1+p.grow*(p.max-p.life)));
+        if(p.kind==='smoke') p.m.material.opacity=.45;
+        if(p.life<=0 || ((p.kind==='spray'||p.kind==='chip') && p.m.position.y<WATER_Y)) p.m.visible=false;
+      }
+      for(const r of rings){ if(!r.m.visible) continue; r.life-=dt; r.m.scale.addScalar(dt*3.2); r.m.material.opacity=.5*Math.max(0,r.life/1.1); if(r.life<=0) r.m.visible=false; }
+    },
+    reset(){ for(const p of pool) p.m.visible=false; for(const r of rings) r.m.visible=false; },
+  };
+})();
+const _wp=new T.Vector3();
 
 /* ---------- Mechanics ---------- */
 function collapseHalf(b,h,fromT){
@@ -575,7 +700,7 @@ function consume(b){
   b.consumed=true; S.consumed++; renderPips();
   S.falling.push({o:b.gate,delay:.7,vy:0,rx:(R()-.5)*.8,rz:(R()>.5?1:-1)*(.6+R()*.6),light:b.lanternLight,lan:b.lantern});
 }
-function openGate(b){ b.gateOpen=true; audio.clank(); }
+function openGate(b){ b.gateOpen=true; audio.clank(); audio.chain(); b.gate.getWorldPosition(_wp); FX.emit('dust',_wp.x,3.3,_wp.z,10); }
 function die(){
   S.mode='dying'; S.dying=0;
   showCaption('Every bridge out of here has fallen.');
@@ -593,6 +718,7 @@ function startReload(){
 function fire(){
   if(S.mode!=='play'||S.ammo<=0||S.reloading||S.stagger>0||S.holding) return;
   S.ammo--; S.fireT=.5; S.recoil=1; S.flash=.07; S.shake=Math.max(S.shake,.3); audio.shot();
+  hunter.flash.getWorldPosition(_wp); FX.emit('smoke',_wp.x,_wp.y,_wp.z,6);
   const P=S.pur;
   if(P && P.state!=='dormant'){
     const dx=P.x-S.x,dz=P.z-S.z,d=Math.hypot(dx,dz)||1e-3;
@@ -638,10 +764,17 @@ function setCam(zone,pos,look){
   camera.position.set(pos[0],pos[1],pos[2]); camera.lookAt(look[0],look[1],look[2]);
   S.camBase=camera.position.clone();
 }
+let waterStep=-1;
 function update(dt,time){
   audio.tick();
   // animated scenery
   TX.water.offset.x=time*.006; TX.water.offset.y=time*.004;
+  // choppy 12 fps swell: PS1 meshes animated in discrete steps rather than smoothly
+  const wt=Math.floor(time*12);
+  if(wt!==waterStep){ waterStep=wt;
+    const wp=water.geometry.attributes.position;
+    for(let i=0;i<wp.count;i++) wp.setZ(i,Math.sin(wp.getX(i)*.35+wt*.5)*.1+Math.sin(wp.getY(i)*.28-wt*.37)*.1);
+    wp.needsUpdate=true; }
   for(const k in level.rooms){const r=level.rooms[k];
     const n=.82+.12*Math.sin(time*9+r.seed)+.06*Math.sin(time*23.7+r.seed*3);
     const kill = (S.mode==='dying' && S.room===r) ? Math.max(0,1-S.dying/1.4) : 1;
@@ -653,10 +786,13 @@ function update(dt,time){
   }
   for(const f of S.falling){
     if(f.done) continue; if(f.delay>0){f.delay-=dt;continue;}
+    if(!f.started){ f.started=true; f.o.getWorldPosition(_wp); FX.emit('dust',_wp.x,_wp.y,_wp.z,4); FX.emit('chip',_wp.x,_wp.y,_wp.z,2); }
+    if(!f.splashed && f.o.position.y<WATER_Y){ f.splashed=true; f.o.getWorldPosition(_wp); FX.splash(_wp.x,_wp.z,8); if(((FX.n++)&1)===0) audio.splash(.6); }
     f.vy-=16*dt; f.o.position.y+=f.vy*dt; f.o.rotation.x+=f.rx*dt; f.o.rotation.z+=f.rz*dt;
     if(f.light) f.light.intensity=Math.max(0,f.light.intensity-dt*1.5);
     if(f.o.position.y<-14){f.o.visible=false;f.done=true;}
   }
+  FX.update(dt); updateLights(dt);
   if(capTimer>0){capTimer-=dt;if(capTimer<=0)showCaption('');}
   if(nameTimer>0){nameTimer-=dt;if(nameTimer<=0)$('roomname').classList.remove('show');}
 
@@ -759,5 +895,8 @@ function frame(now){
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
+// debug only: advance n fixed frames synchronously and draw once (rAF is paused while the page is hidden)
+if(window.SG){ let dbgT=0; SG.step=(n,dt)=>{ dt=dt||1/60; for(let i=0;i<n;i++){ dbgT+=dt; update(dt,100+dbgT); }
+  renderer.setRenderTarget(RT); renderer.render(scene,camera); renderer.setRenderTarget(null); renderer.render(post,postCam); }; }
 })();
 </script>
