@@ -60,7 +60,7 @@ Script sections, in file order (search for the `/* ---------- ... ---------- */`
 | Seeded random | Deterministic RNG, so procedural textures and props are stable between loads. |
 | PS1 materials | `psx()` injects vertex snapping into any material. Procedural canvas textures. Material palette `M`. |
 | Renderer | 320×240 render target, then a post shader (dither, quantize, vignette, fade). Fog, lights, and 4:3 letterbox fitting. |
-| Static world | Water plane (12 fps stepped swell), two colonnade rings and a flat moon disc. |
+| Static world | Water plane (12 fps stepped swell) and the distant colonnade ring. |
 | Player | `buildHunter()` builds the rig. `solveArm()` is two-bone IK. `poseHunter()` animates gait, gun carry and death collapse. |
 | Level construction | `buildLevel()` turns `LEVEL` into rooms (floor, pillars, sconce, drain hatch, escape beam) and bridges (segmented halves, gate with portcullis, valve wheel and lantern, side camera). |
 | Geometry queries | `walkable()` handles collision against rooms, standing bridge halves and closed gates. `locate()` reports which room or bridge a point is on. |
@@ -96,6 +96,8 @@ The win condition is all valves turned. The room you're standing in then opens a
    - **Lights are data, not objects.** `addSrc()` records sources in `level.lights`; `updateLights()` moves a fixed pool of 6 `PointLight`s (`LP`) onto the nearest ones with fades. Constant light count means no shader recompiles. Room sconces and bridge lanterns animate `src.intensity`, not a light.
    - Audio: generated-impulse reverb, stone vs bridge footsteps, a proximity drone and heartbeat from `audio.threat(v)`, chain clinks on gate open.
    - Tunables: pool size 6, reverb wet .33, threat range 26, water swell amplitude .1.
+   - Review-fix decisions: pooled lights ramp in or out (`p.k`) only when they change source, and settled lights follow `src.intensity` directly so sconce flicker survives. Lantern light y follows its gate as it falls. `box()` shares geometry by dimensions (flagged `shared`) and `buildLevel()` disposes the rest, so retries don't leak. The second colonnade ring and moon disc were dropped: they sat beyond the fog's far plane (42) and above what the downward-pitched cameras can see. The particle pool is 192.
+   - Known limitation: the pursuer ignores the bridge piers (and gate bases) and can wade through them. It is a placeholder (Lucas's call), so it isn't steered yet; revisit with the pursuer redesign.
    - Not verified: audio by ear (the sim ran it without errors but nothing was listened to), affine warping on other GPUs, performance on a weak machine, the pursuer's head leaves the top of frame when it stands on a room next to the camera.
 4. Level sequence: 2–3 undirected levels that teach the parity rule. One beat must be "only works if you start in the right room" (exactly two odd vertices). Then a one-way-gate level, then Königsberg (7 bridges, 4 odd rooms).
 5. The death screen's "Why?" and the explainer.
