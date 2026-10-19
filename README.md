@@ -22,6 +22,10 @@ Open `index.html` in a desktop browser. A keyboard is required.
 
 ## Status
 
-Early prototype. The core loop works: tank controls, fixed cameras, valves, collapsing bridges and stranded detection. A pursuer wades through the water and a shotgun can stagger it. The pursuer kills only when you are stranded. The full level sequence and the explainer are still to come.
+Early prototype. The core loop works: tank controls, fixed cameras, valves, collapsing bridges and stranded detection. A pursuer wades through the water and kills only when you are stranded. A shotgun with limited shells can stagger it. The PS1 look is polished (affine textures, dithering, stepped animation, particles, reverb and proximity audio). The full level sequence and the explainer are still to come.
 
 Built with [Three.js](https://threejs.org/) r128. No build step.
+
+## Development
+
+Serve the folder (`python -m http.server 8123`) and open `index.html#debug`, which exposes `window.SG` for testing. See `CLAUDE.md` for the design rules, structure, build plan and workflow notes.

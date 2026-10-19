@@ -36,7 +36,7 @@ One-way gates, the RE2 nod, are a later mechanic. They teach the directed versio
 
 ## Aesthetic
 
-- **PS1 rendering.** The scene renders at 320×240 and is upscaled with nearest-neighbour filtering. Vertices snap to a grid in the vertex shader (the PS1 wobble). Lighting is per-vertex Lambert (Gouraud). Textures are tiny procedurally drawn canvases with no filtering, and a post-process pass adds Bayer dithering, colour quantization and a vignette. Fog is heavy. Janky low-poly procedural models are intentional, so don't "improve" them toward realism.
+- **PS1 rendering.** The scene renders at 320×240 and is upscaled with nearest-neighbour filtering. Vertices snap to a grid in the vertex shader (the PS1 wobble). Lighting is per-vertex Lambert (Gouraud). Textures are tiny procedurally drawn canvases with no filtering, and a post-process pass adds Bayer dithering, colour quantization and a vignette. Textures are mapped affinely (no perspective correction), and water and pursuer animation step at 12 fps. Fog is heavy. Janky low-poly procedural models are intentional, so don't "improve" them toward realism.
 - **Gothic, Bloodborne-ish, not police-station RE.** Stone rooms, narrow stone bridges over black water, iron portcullis gates, sconces and lanterns, a distant colonnade.
 - **The player character** is a hunter in a long flowing coat with a tricorn hat and a scarf over the mouth. He carries a **double-barrel shotgun** (the anachronism is fine) in a **low two-handed carry**. The stock rides at the right side of the chest and the muzzle points down-left, past the front of the left knee. Arms are two-bone IK chains solved every frame so both hands stay on the gun. Walking adds torso counter-twist, gun sway and knee bend, and running raises the gun slightly. This pose took several iterations to get right, so be careful changing it.
 - **Typography** uses IM Fell English SC (display) and IM Fell English (body). The palette is `--void`, `--bone`, `--ash`, `--blood`, `--ember` and `--iron`.
@@ -62,11 +62,12 @@ Script sections, in file order (search for the `/* ---------- ... ---------- */`
 | Renderer | 320×240 render target, then a post shader (dither, quantize, vignette, fade). Fog, lights, and 4:3 letterbox fitting. |
 | Static world | Water plane (12 fps stepped swell) and the distant colonnade ring. |
 | Player | `buildHunter()` builds the rig. `solveArm()` is two-bone IK. `poseHunter()` animates gait, gun carry and death collapse. |
-| Level construction | `buildLevel()` turns `LEVEL` into rooms (floor, pillars, sconce, drain hatch, escape beam) and bridges (segmented halves, gate with portcullis, valve wheel and lantern, side camera). |
+| Level construction | `buildLevel()` turns `LEVEL` into rooms (floor, pillars, sconce, slime band, drain hatch, escape beam) and bridges (segmented halves, ruined piers, gate with portcullis, chains, valve wheel and lantern, side camera). `box()` shares geometry by size and `buildLevel()` disposes the rest, so retries don't leak. Light sources are recorded as data via `addSrc()` into `level.lights`. |
+| Lights | `updateLights()` moves a fixed pool of 6 `PointLight`s (`LP`) onto the nearest sources each frame, with fades when a light changes source. A constant light count means no shader recompiles. |
 | Geometry queries | `walkable()` handles collision against rooms, standing bridge halves and closed gates. `locate()` reports which room or bridge a point is on. |
 | Pursuer | `buildPursuer()`, `resetPursuer()` and `updatePursuer()`: a tall drowned figure wading in the water, with states dormant, hunt and stagger, plus the contact rule (knockback, or death if stranded). |
-| Audio | Procedural Web Audio helpers. |
-| State | Global `S` (player position, heading, mode, falling debris, consumed count, stranded flag, ammo, route log), HUD helpers and `reset()`. |
+| Audio | Procedural Web Audio helpers: ambience, drips, valve and gate sounds, cistern reverb, surface-aware footsteps, and the pursuer proximity drone and heartbeat (`audio.threat(v)`). |
+| State | Global `S` (player position, heading, mode, falling debris, consumed count, stranded flag, clip and reserve ammo, route log), HUD helpers and `reset()`. |
 | Particles | `FX`: pooled dust, chips, spray, smoke and water ripples. Hooked into falling debris, gates, the shotgun and pursuer footsteps. |
 | Mechanics | `collapseHalf`, `consume` (also drops the gate and lantern into the water), `openGate`, `fire`, `startReload`, `setStranded`, `die` and `win`. |
 | Input | Key handling. Mode flow is title, then play, then dying or won. |
@@ -79,7 +80,7 @@ The win condition is all valves turned. The room you're standing in then opens a
 ## Build plan
 
 1. ~~Core loop: one solvable level, tank controls, fixed cameras, valves, collapsing bridges, stranded detection.~~ **Done.**
-2. ~~Pursuer and shotgun.~~ **Built, awaiting Lucas's playtest.** Decisions and why:
+2. ~~Pursuer and shotgun.~~ **Done** (PR #1 and PR #2). Decisions and why:
    - Stranding no longer kills on arrival. It sets `S.stranded`, and the pursuer reaching you kills. Death stays the graph's fault (you're stranded), the pursuer just delivers it. Stranding wakes the pursuer and speeds it up (3.0 vs 1.6) so waiting never becomes a long, boring timeout.
    - Contact with moves left: knockback in 0.1-unit steps that stop at the first non-`walkable()` spot, 1.5s stagger, 2s grace so it can't chain-stun. Never lethal, so it costs time and position, not a life.
    - **The pursuer can't hit you while you hold a valve.** Playtest found a single knockback jump teleporting the player through a closed gate; stepped knockback fixes the cause, and the valve exemption removes the frustration of being shoved mid-turn. Gameplay here is aesthetic, not a skill test.
@@ -88,7 +89,7 @@ The win condition is all valves turned. The room you're standing in then opens a
    - `S.route` logs rooms entered and bridges crossed (`{bridge, from, to}`) for the step 5 replay. It isn't displayed yet.
    - Knockback on a bridge pushes along the bridge axis (the rails block a sideways shove and the player would otherwise be pinned). Tunable numbers: pursuer speeds, contact radius (`contact`), stagger/grace times, shot cone and range, reload time.
    - Known placeholders (fixed in step 3): crude pursuer model and base clipping.
-3. ~~Further PS1 polish.~~ **Built, awaiting Lucas's playtest.** Decisions and why:
+3. ~~Further PS1 polish.~~ **Done.** Lucas playtested it: sound and effects are good; the floor sigils were rejected and removed. Shipped in PR #3, with review fixes in PR #4. Decisions and why:
    - **Affine texture mapping** (`AFFINE` flag in `psx()`): uv*w and w varyings divided in the fragment shader, because GLSL ES 1.0 has no `noperspective`. Set the flag false if r128 chunks ever break it.
    - **The pursuer climbs onto rooms.** Over a room footprint its Y lerps to the floor; over open water it wades at `WATER_Y`. Contact stays planar distance, so the death rule is untouched. Rooms are solid, bridges are not.
    - Pursuer animation runs on a stepped 12 fps clock (PS1 keyframes); the hunter does not, because his feel matters.
@@ -98,16 +99,32 @@ The win condition is all valves turned. The room you're standing in then opens a
    - Tunables: pool size 6, reverb wet .33, threat range 26, water swell amplitude .1.
    - Review-fix decisions: pooled lights ramp in or out (`p.k`) only when they change source, and settled lights follow `src.intensity` directly so sconce flicker survives. Lantern light y follows its gate as it falls. `box()` shares geometry by dimensions (flagged `shared`) and `buildLevel()` disposes the rest, so retries don't leak. The second colonnade ring and moon disc were dropped: they sat beyond the fog's far plane (42) and above what the downward-pitched cameras can see. The particle pool is 192.
    - Known limitation: the pursuer ignores the bridge piers (and gate bases) and can wade through them. It is a placeholder (Lucas's call), so it isn't steered yet; revisit with the pursuer redesign.
-   - Not verified: audio by ear (the sim ran it without errors but nothing was listened to), affine warping on other GPUs, performance on a weak machine, the pursuer's head leaves the top of frame when it stands on a room next to the camera.
+   - Not verified: affine warping on other GPUs and performance on a weak machine (only checked in the in-app browser). The pursuer's head leaves the top of frame when it stands on a room next to the camera (accepted for now).
 4. Level sequence: 2–3 undirected levels that teach the parity rule. One beat must be "only works if you start in the right room" (exactly two odd vertices). Then a one-way-gate level, then Königsberg (7 bridges, 4 odd rooms).
 5. The death screen's "Why?" and the explainer.
 
-### Planned, not scheduled
+### Backlog: low priority, decorative
 
-- **Room decoration that reflects each room's name.** Rooms currently share one look, and `LEVEL.rooms[k].name` ("The Vestry" etc.) isn't expressed in the scene. Add props and dressing per name (pews and a lectern for the vestry, and so on), authored as data on the room so geometry still comes from `LEVEL`. This also gives fixed cameras a way to tell rooms apart; whatever is used must not z-fight, warp or clip under camera shake (the floor inlay failed on all three).
-- **Injury effect: a regenerating-health illusion.** Contact with the pursuer (the knockback and stagger in `updatePursuer`) should look like taking damage: screen-edge blood vignette, desaturation, heavier breathing or limp, recovering over a few seconds. It is purely cosmetic and never lethal. The only death remains being stranded, so it must not read as a health bar the player can run out of; repeated hits just re-trigger the effect. Likely hooks: the post shader (a `hurt` uniform next to `fade`), `S.stagger` and `S.grace`, and `audio`.
+None of these block Step 4 or 5. Pick them up only when Lucas asks, or once the level sequence and explainer are in.
+
+- **Room decoration that fits each room's name, possibly with enclosed rooms.** Rooms are bare platforms, and names like THE OSSUARY and THE DROWNED CHAPEL (current names: VESTRY, OSSUARY, CISTERN HEART, WEIR, DROWNED CHAPEL, in `LEVEL.rooms[k].name`) promise more than a barren platform delivers. Lucas wants the dressing to match the name, and is open to rooms becoming enclosed spaces (walls, arches, a roof) rather than open slabs. Constraints to design around:
+  - Fixed cameras: enclosing walls must not hide the player or the graph. Expect cut-away or low walls on the camera side, or per-zone visibility.
+  - Keep `walkable()` and `locate()` working. They treat a room as a square footprint of half-width `H`, and bridges attach at its edges.
+  - Author the dressing as data on the room (a per-name prop set), so geometry still comes from `LEVEL`.
+  - Anything added must not z-fight, warp or clip under camera shake. The floor sigil inlay failed on all three, and also read as meaningless to the player.
+  - Mind the light budget: sconces and lanterns are data sources feeding the pool of 6 `PointLight`s, so extra lit props should be emissive meshes, not new lights.
+- **Injury effect: a regenerating-health illusion.** Pursuer contact (the knockback and stagger in `updatePursuer`) should look like taking damage: a red vignette that deepens as "health" drops, plus optional desaturation, heavier breathing or a limp, recovering over a few seconds. The real rule does not change: the player cannot die from damage and can only die by being stranded. So it must never read as a bar that can be emptied except by stranding. Repeated hits re-trigger or deepen the effect, capped below "dead". A stranded death can show it filling fully as the pursuer lands the killing blow. Likely hooks: the post shader (a `hurt` uniform next to `fade`, in the vignette term), `S.stagger` and `S.grace`, and `audio`.
+- **Pursuer redesign.** The model and behaviour are still a placeholder (Lucas's own description). Known limitations to fix then: it wades through bridge piers and gate bases, and its head leaves the top of frame when it stands on a room.
 
 As the file grows, splitting it into modules (level data, renderer, player, enemy, explainer) is reasonable. Keep it buildable as a single self-contained page, since it's shared as a published artifact.
+
+## Development and testing
+
+- **Serve it, don't just double-click it.** `.claude/launch.json` defines `seven-gates` (`python -m http.server 8123`). Open `http://localhost:8123/index.html#debug`. Add a `?v=N` query when reloading to dodge the cache.
+- **Encoding.** `index.html` starts with `<meta charset="utf-8">`. Simple servers send no charset, and a literal non-ASCII character (the multiplication sign in the reserve counter) rendered as a garbled `A` with a tilde. Keep non-ASCII out of JS source: use \u00d7-style escapes, and HTML entities in markup. The Edit tool may silently normalise an escape back to the literal character, so check with `grep` or a small Python script.
+- **Headless-style testing.** The browser pane does not run `requestAnimationFrame` while hidden. In `#debug`, drive the game with `SG.step(n)` (n fixed 1/60 s frames, one draw), and poke state through `SG.S`, `SG.level`, `SG.fire()`, `SG.openGate(b)` and `SG.collapseHalf(b,h,fromT)`. A useful recipe: click `#begin`, teleport the player by setting `SG.S.x` and `z`, set the pursuer to `state='hunt'` to wake it, `SG.step(60)`, then screenshot. Always check the console for shader compile errors after touching `psx()`.
+- **Pitfall: branch from the latest `main`.** Step 3's branch was cut before PR #2 merged, so it silently lacked the limited-ammo feature until `main` was merged in. At the start of a session, `git fetch` and confirm the branch contains `origin/main`.
+- **PRs.** Work lands through GitHub PRs (`LucasFinney/seven-gates`). Review fixes may be stacked on the step's PR; merge the base PR first.
 
 ## Session workflow
 
@@ -126,4 +143,5 @@ This file is the project's memory. Chat history is not, so anything decided in a
 
 - He tests on desktop and gives visual feedback with screenshots and reference images. Check visuals yourself where you can, such as screenshotting a local browser, before asking him to look.
 - Animation and character feel matter a lot to him. Small, specific iterations work well.
+- He prefers decorative extras to be parked in the backlog above, not built opportunistically. When he calls something a placeholder (the pursuer), don't invest in it.
 - Graph theory terminology: he's a mathematician, so be precise (degree, Euler path vs circuit, directed vs undirected).
