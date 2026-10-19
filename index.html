@@ -45,6 +45,11 @@ button:hover,button:focus-visible{border-color:var(--ember);color:var(--ember);b
 #valves .pips{display:flex;gap:5px}
 #valves .pip{width:9px;height:9px;transform:rotate(45deg);border:1px solid var(--ash)}
 #valves .pip.on{background:var(--ember);border-color:var(--ember)}
+#ammo{position:absolute;left:3%;bottom:9%;display:flex;align-items:flex-end;gap:6px;font-size:clamp(12px,1.5vw,16px);letter-spacing:.18em;color:var(--ash)}
+#ammo .shells{display:flex;gap:5px}
+#ammo .shell{width:7px;height:15px;background:var(--bone);border-radius:1px 1px 0 0}
+#ammo .shell.off{background:transparent;border:1px solid var(--ash)}
+#ammo.reloading{color:var(--ember)}
 #prompt{position:absolute;left:0;right:0;bottom:12%;text-align:center;font-size:clamp(14px,1.8vw,20px);letter-spacing:.12em;color:var(--bone);text-shadow:0 0 6px #000,0 0 2px #000;opacity:0;transition:opacity .2s}
 #prompt.show{opacity:1}
 #prompt .bar{display:block;margin:6px auto 0;width:120px;height:3px;background:rgba(216,205,184,.2)}
@@ -64,6 +69,7 @@ button:hover,button:focus-visible{border-color:var(--ember);color:var(--ember);b
       <div id="roomname"></div>
       <div id="caption"></div>
       <div id="prompt"><span id="prompttext"></span><span class="bar" id="promptbar" hidden><i id="promptfill"></i></span></div>
+      <div id="ammo"><span>SHELLS</span><span class="shells" id="shells"></span></div>
       <div id="valves"><span>VALVES</span><span class="pips" id="pips"></span></div>
       <canvas id="devmap" width="240" height="180" hidden></canvas>
     </div>
@@ -78,6 +84,8 @@ button:hover,button:focus-visible{border-color:var(--ember);color:var(--ember);b
         <kbd>Shift</kbd><span>Run</span>
         <kbd>Q</kbd><span>Quick turn</span>
         <kbd>E / Space</kbd><span>Use (hold to turn a valve)</span>
+        <kbd>F</kbd><span>Fire the shotgun (staggers the thing in the water)</span>
+        <kbd>R</kbd><span>Reload</span>
         <kbd>M</kbd><span>Developer map</span>
       </div>
       <button id="begin">Enter the Cistern</button>
@@ -92,7 +100,7 @@ button:hover,button:focus-visible{border-color:var(--ember);color:var(--ember);b
       <h2>THE CISTERN DRAINS</h2>
       <p>Every gate raised. Every bridge crossed exactly once.</p>
       <button id="again">Play again</button>
-      <div class="note">Prototype step 1: the core loop. The pursuer, the shotgun and the seventh gate come next.</div>
+      <div class="note">Prototype step 2: the pursuer and the shotgun. More levels, and the seventh gate, come next.</div>
     </div>
   </div>
 </div>
@@ -107,6 +115,8 @@ const T = THREE;
 // so a full route exists from anywhere, but greedy choices strand you.
 const LEVEL = {
   start:'A',
+  // the pursuer wades in from here; wakeDelay is seconds before it starts hunting
+  pursuer:{spawn:[34,0], speed:1.6, wakeDelay:14},
   rooms:{
     A:{x:-20,z:-9, name:'THE VESTRY',        cam:[-28.5,9.5,-17.5]},
     B:{x:-20,z: 9, name:'THE OSSUARY',       cam:[-28.5,9.5, 17.5]},
@@ -175,6 +185,7 @@ const M = {
   coat: lam(0x5a4d58,TX.cloth), dark: lam(0x2a2428), skin: lam(0xc9b8a2), leather: lam(0x4a3426),
   steel: lam(0x7a7c80), wood: lam(0x5a3a22), flame: glow(0xffb45a), beam: glow(0xd9e6ff),
 };
+M.drown=lam(0x3f4d48,TX.cloth); M.pale=lam(0x9aa89c);
 M.beam.transparent=true; M.beam.opacity=.35; M.beam.depthWrite=false; M.beam.blending=T.AdditiveBlending;
 
 /* ---------- Renderer: 320x240 internal, dithered and quantized on the way out ---------- */
@@ -270,7 +281,8 @@ function buildHunter(){
   box(.1,.07,.24,M.wood,0,-.05,.25,gun);           // fore-end
   box(.085,.12,.3,M.wood,0,-.04,-.22,gun);         // stock
   box(.09,.17,.1,M.wood,0,-.08,-.38,gun);          // butt
-  return {root,body,upper,head,legL,legR,skirtG,gun,armL,armR,run:0};
+  const flash=box(.2,.2,.3,M.flame,0,.02,.95,gun); flash.visible=false; // muzzle flash
+  return {root,body,upper,head,legL,legR,skirtG,gun,armL,armR,flash,run:0,aim:0};
 }
 const hunter = buildHunter(); scene.add(hunter.root);
 const _grip=new T.Vector3(), _dir=new T.Vector3(), _muz=new T.Vector3(), _hR=new T.Vector3(), _hL=new T.Vector3();
@@ -291,8 +303,12 @@ function poseHunter(dt,moving,time){
   hr.head.rotation.y=-sw*.05*amp; hr.head.rotation.x=breath*.02;
   // low carry: grip at the right hip, barrels angled forward-left and down; running lifts it toward port arms
   const r=hr.run;
-  _grip.set(-.05+sw*.015*amp, 1.35+breath*.008+Math.abs(sw)*.02*amp+.06*r, .28+.03*r);
-  _dir.set(.56, -.7+.25*r, .39+.1*r).normalize();
+  // firing: the gun swings up level and kicks; with aim = 0 and recoil = 0 this is exactly the carry pose
+  hr.aim+=((S.fireT>0?1:0)-hr.aim)*Math.min(1,dt*12);
+  const a=hr.aim, kick=S.recoil;
+  _grip.set(-.05+sw*.015*amp, 1.35+breath*.008+Math.abs(sw)*.02*amp+.06*r+.1*a, .28+.03*r+.1*a-.08*kick);
+  _dir.set(.56*(1-a)+.08*a, (-.7+.25*r)*(1-a)+.05*a+.15*kick, (.39+.1*r)*(1-a)+a).normalize();
+  hr.flash.visible=S.flash>0;
   _muz.copy(_grip).add(_dir);
   _m.lookAt(_muz,_grip,UP); hr.gun.quaternion.setFromRotationMatrix(_m);
   hr.gun.rotation.z+=sw*.05*amp;
@@ -301,6 +317,7 @@ function poseHunter(dt,moving,time){
   solveArm(hr.armL,_hL.set(0,-.06,.22).applyMatrix4(hr.gun.matrix));
   if(S.mode==='dying'){ hr.body.rotation.z=Math.min(1.45,S.dying*1.2); hr.body.position.y=-Math.min(.6,S.dying*.4); }
   else hr.body.rotation.z=0;
+  hr.body.rotation.x = S.stagger>0 ? -.32*Math.min(1,S.stagger/.5)+Math.sin(time*30)*.02 : 0;
 }
 
 /* ---------- Level construction ---------- */
@@ -398,6 +415,69 @@ function locate(x,z){
   return {};
 }
 
+/* ---------- Pursuer: a drowned thing wading through the cistern ---------- */
+// It can't be killed and ignores collapsed bridges. It only ever kills you when the graph has already
+// stranded you; otherwise contact is a shove and a stagger.
+const WATER_Y = -3.2;
+function buildPursuer(){
+  const root=new T.Group(), body=new T.Group(); root.add(body);
+  box(1.1,4.6,.9,M.drown,0,2.3,0,body);                 // legs fused into one wading column
+  box(1.7,2.3,1.05,M.drown,0,5.75,0,body);              // torso
+  box(2.3,.5,1.1,M.drown,0,6.7,0,body);                 // hunched shoulders
+  const head=new T.Group(); head.position.set(0,7.35,.25); body.add(head);
+  box(.75,.85,.75,M.pale,0,0,0,head);
+  box(.14,.1,.1,M.flame,-.2,.08,.38,head); box(.14,.1,.1,M.flame,.2,.08,.38,head);
+  const arms=[-1,1].map(sx=>{
+    const g=new T.Group(); g.position.set(sx*1.1,6.5,0); body.add(g);
+    const m=limb(3.4,.3,M.pale,g); m.rotation.x=Math.PI; // hangs down from the shoulder
+    return g;
+  });
+  root.visible=true;
+  return {root,body,head,arms};
+}
+const pursuer=buildPursuer(); scene.add(pursuer.root);
+const PUR_CFG=LEVEL.pursuer;
+function resetPursuer(){
+  const P=S.pur={x:PUR_CFG.spawn[0],z:PUR_CFG.spawn[1],state:'dormant',stagger:0,slow:0,pause:0,rise:0,step:0,groan:3};
+  pursuer.root.position.set(P.x,WATER_Y-8,P.z);
+}
+function updatePursuer(dt,time){
+  const P=S.pur; if(!P) return;
+  const dx=S.x-P.x,dz=S.z-P.z,dist=Math.hypot(dx,dz)||1e-3;
+  if(S.mode==='play'){
+    S.playT+=dt;
+    if(P.state==='dormant' && (S.playT>=PUR_CFG.wakeDelay||dist<14||S.stranded)){ P.state='hunt'; audio.splash(); showCaption('Something is moving in the water.',4); }
+    if(P.stagger>0){ P.stagger-=dt; if(P.stagger<=0&&P.state==='stagger') P.state='hunt'; }
+    if(P.pause>0) P.pause-=dt;
+    if(P.slow>0) P.slow-=dt;
+    if(P.state==='hunt' && P.pause<=0){
+      const v=(S.stranded?3.0:PUR_CFG.speed)*(P.slow>0?.5:1);
+      const st=Math.min(dist,v*dt); P.x+=dx/dist*st; P.z+=dz/dist*st;
+      P.step+=st; if(P.step>2.2){ P.step=0; audio.splash(.4); }
+      P.groan-=dt; if(P.groan<=0){ P.groan=4+Math.random()*3; if(dist<24) audio.groan(); }
+    }
+    // contact
+    if(P.state==='hunt' && P.pause<=0 && dist<1.9){
+      if(S.stranded) die();
+      else if(S.grace<=0 && !S.holding){ // turning a valve is safe: no hit, and no shove across a closed gate
+        S.stagger=1.5; S.grace=2; P.pause=1; S.shake=.5; audio.thud();
+        // shove in small steps so it stops at the first blocked spot instead of jumping a gate
+        for(let d=0;d<2.2;d+=.1){ const nx=S.x+dx/dist*.1, nz=S.z+dz/dist*.1; if(!walkable(nx,nz)) break; S.x=nx; S.z=nz; }
+      }
+    }
+  }
+  // look and motion
+  P.rise+=((P.state==='dormant'?0:1)-P.rise)*Math.min(1,dt*1.2);
+  pursuer.root.position.set(P.x,WATER_Y-(1-P.rise)*8+Math.sin(time*1.6)*.08,P.z);
+  pursuer.root.rotation.y=Math.atan2(dx,dz);
+  const sag = P.stagger>0 ? -.22 : .1;
+  pursuer.body.rotation.x += (sag-pursuer.body.rotation.x)*Math.min(1,dt*6);
+  const sw=Math.sin(time*2.2);
+  pursuer.arms[0].rotation.x=sw*.18+(P.state==='hunt'?-.5:0);
+  pursuer.arms[1].rotation.x=-sw*.18+(P.state==='hunt'?-.5:0);
+  pursuer.head.rotation.z=Math.sin(time*1.1)*.12;
+}
+
 /* ---------- Audio ---------- */
 const audio={ctx:null,
   init(){ if(this.ctx) return; try{this.ctx=new (window.AudioContext||window.webkitAudioContext)();}catch(e){return;}
@@ -426,12 +506,20 @@ const audio={ctx:null,
   crumble(){ this.noise(1.4,1400,90,1.2); this.tone(60,30,1.0,.35); },
   creak(){ this.tone(160+Math.random()*60,110,.22,.06,'sawtooth'); },
   clank(){ this.tone(90,45,.4,.3,'square'); this.noise(.3,4000,600,.25,'white'); },
+  splash(v){ this.noise(.5,900,160,.18*(v||1)); },
+  groan(){ this.tone(70,42,1.4,.14,'sawtooth'); },
+  thud(){ this.tone(70,30,.35,.5); this.noise(.3,500,80,.5); },
+  shot(){ this.noise(.6,5200,260,1.0,'white'); this.tone(120,35,.4,.5,'square'); },
+  reload(){ this.tone(520,260,.06,.12,'square'); this.noise(.12,3000,800,.12,'white'); },
   death(){ this.tone(120,32,2.6,.45); this.noise(2.5,600,60,.8); },
   win(){ this.tone(220,440,1.8,.08,'triangle'); this.tone(330,660,2.2,.06,'triangle'); }
 };
 
 /* ---------- State ---------- */
-const S={mode:'title',x:0,z:0,h:0,hold:0,phase:0,turn:0,zone:'',falling:[],dying:0,escape:null,room:null,shake:0,cap:0};
+const S={mode:'title',x:0,z:0,h:0,hold:0,phase:0,turn:0,zone:'',falling:[],dying:0,escape:null,room:null,shake:0,cap:0,
+  stranded:false,stagger:0,grace:0,playT:0,ammo:2,reloading:false,reload:0,fireT:0,recoil:0,flash:0,holding:false,route:[],pur:null};
+const AMMO_MAX=2, RELOAD_T=2.5;
+if(location.hash==='#debug') window.SG={S,get level(){return level;}};
 const keys={};
 const $=id=>document.getElementById(id);
 
@@ -439,6 +527,8 @@ function reset(){
   buildLevel();
   const r=level.rooms[LEVEL.start];
   S.x=r.x; S.z=r.z-1; S.h=0; S.hold=0; S.turn=0; S.zone=''; S.falling=[]; S.dying=0; S.escape=null; S.room=null; S.consumed=0;
+  S.stranded=false; S.stagger=0; S.grace=0; S.playT=0; S.ammo=AMMO_MAX; S.reloading=false; S.reload=0; S.fireT=0; S.recoil=0; S.flash=0; S.holding=false; S.route=[];
+  resetPursuer(); renderShells();
   postMat.uniforms.fade.value=0;
   $('death').hidden=true; $('death').classList.remove('show'); $('win').hidden=true;
   showCaption('');
@@ -447,6 +537,11 @@ function reset(){
 function renderPips(){
   const p=$('pips'); p.innerHTML='';
   for(let i=0;i<level.total;i++){const s=document.createElement('span');s.className='pip'+(i<S.consumed?' on':'');p.appendChild(s);}
+}
+function renderShells(){
+  const p=$('shells'); p.innerHTML='';
+  for(let i=0;i<AMMO_MAX;i++){const s=document.createElement('span');s.className='shell'+(i<S.ammo?'':' off');p.appendChild(s);}
+  $('ammo').classList.toggle('reloading',S.reloading);
 }
 let capTimer=0, nameTimer=0;
 function showCaption(t,dur){ $('caption').textContent=t; $('caption').classList.toggle('show',!!t); capTimer=dur||0; }
@@ -468,6 +563,28 @@ function die(){
   S.mode='dying'; S.dying=0;
   showCaption('Every bridge out of here has fallen.');
 }
+// the stranded room: arrival no longer kills, the pursuer does (see updatePursuer)
+function setStranded(on){
+  if(on&&!S.stranded) showCaption('Every bridge out of here has fallen.');
+  S.stranded=on;
+}
+function startReload(){
+  if(S.reloading||S.ammo>=AMMO_MAX) return;
+  S.reloading=true; S.reload=RELOAD_T; audio.reload(); renderShells();
+}
+// Fires along the facing direction. A hit staggers and then slows the pursuer; it can never be killed.
+function fire(){
+  if(S.mode!=='play'||S.ammo<=0||S.reloading||S.stagger>0||S.holding) return;
+  S.ammo--; S.fireT=.5; S.recoil=1; S.flash=.07; S.shake=Math.max(S.shake,.3); audio.shot();
+  const P=S.pur;
+  if(P && P.state!=='dormant'){
+    const dx=P.x-S.x,dz=P.z-S.z,d=Math.hypot(dx,dz)||1e-3;
+    if(d<12 && (dx*Math.sin(S.h)+dz*Math.cos(S.h))/d>Math.cos(.31)){
+      P.state='stagger'; P.stagger=3; P.slow=6; P.x+=dx/d*1.2; P.z+=dz/d*1.2; audio.thud();
+    }
+  }
+  if(S.ammo<=0) startReload(); else renderShells();
+}
 function finishDeath(){
   $('death').hidden=false; requestAnimationFrame(()=>requestAnimationFrame(()=>$('death').classList.add('show')));
   audio.death(); setTimeout(()=>$('retry').focus(),2700);
@@ -483,6 +600,8 @@ addEventListener('keydown',e=>{
   if(S.mode==='play'){
     if(k==='q' && !S.turn){ S.turn=Math.PI; }
     if(k==='m'){ $('devmap').hidden=!$('devmap').hidden; }
+    if(k==='f' && !e.repeat) fire();
+    if(k==='r' && !e.repeat) startReload();
     if((k==='e'||k===' ') && S.escape && S.room===S.escape && Math.hypot(S.x-S.escape.x,S.z-S.escape.z)<1.4) win();
   }
 });
@@ -523,13 +642,19 @@ function update(dt,time){
   if(capTimer>0){capTimer-=dt;if(capTimer<=0)showCaption('');}
   if(nameTimer>0){nameTimer-=dt;if(nameTimer<=0)$('roomname').classList.remove('show');}
 
+  // shotgun timers
+  S.fireT=Math.max(0,S.fireT-dt); S.recoil=Math.max(0,S.recoil-dt*4); S.flash=Math.max(0,S.flash-dt);
+  if(S.reloading){ S.reload-=dt; if(S.reload<=0){ S.reloading=false; S.ammo=AMMO_MAX; audio.reload(); renderShells(); } }
+  if(S.mode==='play'){ S.stagger=Math.max(0,S.stagger-dt); S.grace=Math.max(0,S.grace-dt); }
+
   let moving=0;
   if(S.mode==='play'){
     const loc=locate(S.x,S.z);
     const b=loc.bridge && !loc.room ? loc.bridge : null;
     // valve
     let canValve = b && !b.gateOpen && !b.consumed && Math.abs(loc.t-b.mid)<1.75;
-    const holding = canValve && down('e',' ');
+    const holding = canValve && S.stagger<=0 && down('e',' ');
+    S.holding=holding;
     if(holding){
       S.hold+=dt; b.wheel.rotation.x-=dt*4;
       if(Math.floor(S.hold*4)!==Math.floor((S.hold-dt)*4)) audio.creak();
@@ -537,7 +662,7 @@ function update(dt,time){
     } else S.hold=0;
     // tank controls
     if(S.turn>0){ const st=Math.min(S.turn,dt*10); S.h+=st; S.turn-=st; }
-    else if(!holding){
+    else if(!holding && S.stagger<=0){
       const run=down('Shift');
       if(down('a','ArrowLeft')) S.h+=dt*2.7;
       if(down('d','ArrowRight')) S.h-=dt*2.7;
@@ -556,15 +681,16 @@ function update(dt,time){
     // arriving in a room finishes any bridge you were on
     if(loc.room){
       const r=loc.room;
-      if(S.room!==r){ S.room=r; showRoom(r.name); }
+      if(S.room!==r){ S.room=r; showRoom(r.name); S.route.push({room:r.key}); }
       for(const br of r.bridges){ const k=br.A===r?0:1;
-        if(!br.consumed && br.halves[1-k].collapsed && !br.halves[k].collapsed){ collapseHalf(br,k,k===0?br.tStart:br.tEnd); consume(br); }
+        if(!br.consumed && br.halves[1-k].collapsed && !br.halves[k].collapsed){ collapseHalf(br,k,k===0?br.tStart:br.tEnd); consume(br); S.route.push({bridge:br.i,from:(k===0?br.B:br.A).key,to:r.key}); }
         if(!br.consumed) br.lastSide=k;
       }
       if(S.consumed===level.total){
         if(!S.escape){ S.escape=r; r.beam.visible=true; r.hatch.material=M.flame; showCaption('The water drains. A way down opens.',4); }
-      } else if(!r.bridges.some(br=>!br.halves[br.A===r?0:1].collapsed)) die();
-    }
+      }
+      setStranded(S.consumed<level.total && !r.bridges.some(br=>!br.halves[br.A===r?0:1].collapsed));
+    } else setStranded(false);
     // prompt
     let pt='', bar=false;
     if(canValve){ pt='Hold E to turn the valve'; bar=true; }
@@ -581,6 +707,7 @@ function update(dt,time){
     const r=level.rooms[LEVEL.start]; setCam('title',r.cam,[r.x,.4,r.z]);
   }
   if(S.mode!=='dying') S.deathShown=false;
+  updatePursuer(dt,time);
   poseHunter(dt,moving,time);
   // camera shake
   if(S.camBase){ S.shake=Math.max(0,S.shake-dt); const a=S.shake*.18;
