@@ -144,11 +144,17 @@ const R = rng(1736);
 
 /* ---------- PS1 materials: vertex snapping + Gouraud (Lambert is per-vertex in r128) ---------- */
 const snapU = {value:new T.Vector2(160,120)};
+// PS1 interpolated textures affinely (no perspective correction). GLSL ES 1.0 has no `noperspective`, but the
+// hardware divides varyings by w, so passing uv*w and w and dividing in the fragment shader cancels the correction.
+const AFFINE = true;
 function psx(m){
   m.onBeforeCompile = function(s){
     s.uniforms.uSnap = snapU;
-    s.vertexShader = 'uniform vec2 uSnap;\n' + s.vertexShader.replace('#include <project_vertex>',
-      '#include <project_vertex>\n{ vec4 sp = gl_Position; sp.xy = floor(sp.xy/sp.w*uSnap+0.5)/uSnap*sp.w; gl_Position = sp; }');
+    s.vertexShader = 'uniform vec2 uSnap;\nvarying float vAffW;\n' + s.vertexShader.replace('#include <project_vertex>',
+      '#include <project_vertex>\n{ vec4 sp = gl_Position; sp.xy = floor(sp.xy/sp.w*uSnap+0.5)/uSnap*sp.w; gl_Position = sp; }\n'
+      + (AFFINE ? 'vAffW = gl_Position.w;\n#ifdef USE_MAP\nvUv *= gl_Position.w;\n#endif' : 'vAffW = 1.0;'));
+    s.fragmentShader = 'varying float vAffW;\n' + s.fragmentShader.replace('#include <map_fragment>',
+      '#ifdef USE_MAP\nvec4 texelColor = texture2D( map, vUv / vAffW );\ntexelColor = mapTexelToLinear( texelColor );\ndiffuseColor *= texelColor;\n#endif');
   };
   return m;
 }
@@ -620,10 +626,17 @@ function setCam(zone,pos,look){
   camera.position.set(pos[0],pos[1],pos[2]); camera.lookAt(look[0],look[1],look[2]);
   S.camBase=camera.position.clone();
 }
+let waterStep=-1;
 function update(dt,time){
   audio.tick();
   // animated scenery
   TX.water.offset.x=time*.006; TX.water.offset.y=time*.004;
+  // choppy 12 fps swell: PS1 meshes animated in discrete steps rather than smoothly
+  const wt=Math.floor(time*12);
+  if(wt!==waterStep){ waterStep=wt;
+    const wp=water.geometry.attributes.position;
+    for(let i=0;i<wp.count;i++) wp.setZ(i,Math.sin(wp.getX(i)*.35+wt*.5)*.1+Math.sin(wp.getY(i)*.28-wt*.37)*.1);
+    wp.needsUpdate=true; }
   for(const k in level.rooms){const r=level.rooms[k];
     const n=.82+.12*Math.sin(time*9+r.seed)+.06*Math.sin(time*23.7+r.seed*3);
     const kill = (S.mode==='dying' && S.room===r) ? Math.max(0,1-S.dying/1.4) : 1;
