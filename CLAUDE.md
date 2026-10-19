@@ -92,13 +92,18 @@ The win condition is all valves turned. The room you're standing in then opens a
    - **Affine texture mapping** (`AFFINE` flag in `psx()`): uv*w and w varyings divided in the fragment shader, because GLSL ES 1.0 has no `noperspective`. Set the flag false if r128 chunks ever break it.
    - **The pursuer climbs onto rooms.** Over a room footprint its Y lerps to the floor; over open water it wades at `WATER_Y`. Contact stays planar distance, so the death rule is untouched. Rooms are solid, bridges are not.
    - Pursuer animation runs on a stepped 12 fps clock (PS1 keyframes); the hunter does not, because his feel matters.
-   - **Each room has a floor inlay with a dot count equal to its index in `LEVEL.rooms`**, so fixed cameras never leave the player unsure where they are. Step 5 can reuse it for graph labels.
+   - **Floor sigils were tried and removed.** A dot-count inlay per room read as unclear, warped in and out of the floor during screenshake and was cut at some camera angles. Room identity is deferred to the decoration plan below.
    - **Lights are data, not objects.** `addSrc()` records sources in `level.lights`; `updateLights()` moves a fixed pool of 6 `PointLight`s (`LP`) onto the nearest ones with fades. Constant light count means no shader recompiles. Room sconces and bridge lanterns animate `src.intensity`, not a light.
    - Audio: generated-impulse reverb, stone vs bridge footsteps, a proximity drone and heartbeat from `audio.threat(v)`, chain clinks on gate open.
    - Tunables: pool size 6, reverb wet .33, threat range 26, water swell amplitude .1.
    - Not verified: audio by ear (the sim ran it without errors but nothing was listened to), affine warping on other GPUs, performance on a weak machine, the pursuer's head leaves the top of frame when it stands on a room next to the camera.
 4. Level sequence: 2–3 undirected levels that teach the parity rule. One beat must be "only works if you start in the right room" (exactly two odd vertices). Then a one-way-gate level, then Königsberg (7 bridges, 4 odd rooms).
 5. The death screen's "Why?" and the explainer.
+
+### Planned, not scheduled
+
+- **Room decoration that reflects each room's name.** Rooms currently share one look, and `LEVEL.rooms[k].name` ("The Vestry" etc.) isn't expressed in the scene. Add props and dressing per name (pews and a lectern for the vestry, and so on), authored as data on the room so geometry still comes from `LEVEL`. This also gives fixed cameras a way to tell rooms apart; whatever is used must not z-fight, warp or clip under camera shake (the floor inlay failed on all three).
+- **Injury effect: a regenerating-health illusion.** Contact with the pursuer (the knockback and stagger in `updatePursuer`) should look like taking damage: screen-edge blood vignette, desaturation, heavier breathing or limp, recovering over a few seconds. It is purely cosmetic and never lethal. The only death remains being stranded, so it must not read as a health bar the player can run out of; repeated hits just re-trigger the effect. Likely hooks: the post shader (a `hurt` uniform next to `fade`), `S.stagger` and `S.grace`, and `audio`.
 
 As the file grows, splitting it into modules (level data, renderer, player, enemy, explainer) is reasonable. Keep it buildable as a single self-contained page, since it's shared as a published artifact.
 
