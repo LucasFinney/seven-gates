@@ -69,7 +69,7 @@ button:hover,button:focus-visible{border-color:var(--ember);color:var(--ember);b
       <div id="roomname"></div>
       <div id="caption"></div>
       <div id="prompt"><span id="prompttext"></span><span class="bar" id="promptbar" hidden><i id="promptfill"></i></span></div>
-      <div id="ammo"><span>SHELLS</span><span class="shells" id="shells"></span></div>
+      <div id="ammo"><span>SHELLS</span><span class="shells" id="shells"></span><span id="reserve"></span></div>
       <div id="valves"><span>VALVES</span><span class="pips" id="pips"></span></div>
       <canvas id="devmap" width="240" height="180" hidden></canvas>
     </div>
@@ -115,8 +115,10 @@ const T = THREE;
 // so a full route exists from anywhere, but greedy choices strand you.
 const LEVEL = {
   start:'A',
-  // the pursuer wades in from here; wakeDelay is seconds before it starts hunting
-  pursuer:{spawn:[34,0], speed:1.6, wakeDelay:14},
+  // Optional. The pursuer wades in from `spawn`; wakeDelay is seconds before it starts hunting. Omitted
+  // fields fall back to PUR_DEFAULT. A level with no `pursuer` has none: stranding then kills directly.
+  pursuer:{spawn:[34,0], speed:1.6, strandedSpeed:3.0, contact:1.9, wakeDelay:14},
+  shells:8,           // total shotgun shells for the level (loaded + reserve), so stalling can't go on forever
   rooms:{
     A:{x:-20,z:-9, name:'THE VESTRY',        cam:[-28.5,9.5,-17.5]},
     B:{x:-20,z: 9, name:'THE OSSUARY',       cam:[-28.5,9.5, 17.5]},
@@ -488,33 +490,48 @@ function buildPursuer(){
   return {root,body,head,jaw,arms,rags,weeds};
 }
 const pursuer=buildPursuer(); scene.add(pursuer.root);
-const PUR_CFG=LEVEL.pursuer;
+const PUR_DEFAULT={speed:1.6,strandedSpeed:3.0,contact:1.9,wakeDelay:14,wakeRange:14};
 function resetPursuer(){
-  const P=S.pur={x:PUR_CFG.spawn[0],z:PUR_CFG.spawn[1],y:WATER_Y,state:'dormant',stagger:0,slow:0,pause:0,rise:0,step:0,groan:3};
+  const lp=LEVEL.pursuer;
+  pursuer.root.visible=!!lp;
+  if(!lp){ S.pur=null; return; }
+  const cfg=Object.assign({},PUR_DEFAULT,lp);   // read per reset, so a new LEVEL takes effect
+  const P=S.pur={cfg,x:cfg.spawn[0],z:cfg.spawn[1],y:WATER_Y,state:'dormant',stagger:0,slow:0,pause:0,rise:0,step:0,groan:3};
   pursuer.root.position.set(P.x,WATER_Y-8,P.z);
 }
+// Pushes the player up to `max` units along (ux,uz), in small steps so a closed gate can't be jumped.
+function shove(ux,uz,max){
+  for(let d=0;d<max;d+=.1){ const nx=S.x+ux*.1, nz=S.z+uz*.1; if(!walkable(nx,nz)) break; S.x=nx; S.z=nz; }
+}
 function updatePursuer(dt,time){
-  const P=S.pur; if(!P) return;
+  const P=S.pur;
+  if(!P){ audio.threat(0); if(S.mode==='play'&&S.stranded) die(); return; }  // no pursuer on this level: stranding kills directly
+  const cfg=P.cfg;
   const dx=S.x-P.x,dz=S.z-P.z,dist=Math.hypot(dx,dz)||1e-3;
   if(S.mode==='play'){
     S.playT+=dt;
-    if(P.state==='dormant' && (S.playT>=PUR_CFG.wakeDelay||dist<14||S.stranded)){ P.state='hunt'; audio.splash(); showCaption('Something is moving in the water.',4); }
+    if(P.state==='dormant' && (S.playT>=cfg.wakeDelay||dist<cfg.wakeRange||S.stranded)){
+      P.state='hunt'; audio.splash();
+      if(!S.stranded) showCaption('Something is moving in the water.',4);   // don't overwrite the stranded caption
+    }
     if(P.stagger>0){ P.stagger-=dt; if(P.stagger<=0&&P.state==='stagger') P.state='hunt'; }
     if(P.pause>0) P.pause-=dt;
     if(P.slow>0) P.slow-=dt;
     if(P.state==='hunt' && P.pause<=0){
-      const v=(S.stranded?3.0:PUR_CFG.speed)*(P.slow>0?.5:1);
+      const v=(S.stranded?cfg.strandedSpeed:cfg.speed)*(P.slow>0?.5:1);
       const st=Math.min(dist,v*dt); P.x+=dx/dist*st; P.z+=dz/dist*st;
       P.step+=st; if(P.step>2.2){ P.step=0; audio.splash(.4); if(P.y<WATER_Y+.5) FX.splash(P.x,P.z,5); }
       P.groan-=dt; if(P.groan<=0){ P.groan=4+Math.random()*3; if(dist<24) audio.groan(); }
     }
     // contact
-    if(P.state==='hunt' && P.pause<=0 && dist<1.9){
+    if(P.state==='hunt' && P.pause<=0 && dist<cfg.contact){
       if(S.stranded) die();
       else if(S.grace<=0 && !S.holding){ // turning a valve is safe: no hit, and no shove across a closed gate
         S.stagger=1.5; S.grace=2; P.pause=1; S.shake=.5; audio.thud();
-        // shove in small steps so it stops at the first blocked spot instead of jumping a gate
-        for(let d=0;d<2.2;d+=.1){ const nx=S.x+dx/dist*.1, nz=S.z+dz/dist*.1; if(!walkable(nx,nz)) break; S.x=nx; S.z=nz; }
+        // On a bridge the rails block a sideways shove, so push along the bridge, away from the pursuer.
+        const loc=locate(S.x,S.z), br=loc.bridge&&!loc.room?loc.bridge:null;
+        if(br){ const sg=(dx*br.u.x+dz*br.u.z)<0?-1:1; shove(br.u.x*sg,br.u.z*sg,2.2); }
+        else shove(dx/dist,dz/dist,2.2);
       }
     }
   }
@@ -596,8 +613,8 @@ const audio={ctx:null,
 
 /* ---------- State ---------- */
 const S={mode:'title',x:0,z:0,h:0,hold:0,phase:0,turn:0,zone:'',falling:[],dying:0,escape:null,room:null,shake:0,cap:0,
-  stranded:false,stagger:0,grace:0,playT:0,ammo:2,reloading:false,reload:0,fireT:0,recoil:0,flash:0,holding:false,route:[],pur:null};
-const AMMO_MAX=2, RELOAD_T=2.5;
+  stranded:false,stagger:0,grace:0,playT:0,ammo:0,reserve:0,reloading:false,reload:0,fireT:0,recoil:0,flash:0,holding:false,route:[],pur:null};
+const CLIP=2, RELOAD_T=2.5;   // shells per load, seconds per reload (the level's total comes from LEVEL.shells)
 if(location.hash==='#debug') window.SG={S,get level(){return level;},collapseHalf,fire,openGate};
 const keys={};
 const $=id=>document.getElementById(id);
@@ -606,7 +623,7 @@ function reset(){
   buildLevel();
   const r=level.rooms[LEVEL.start];
   S.x=r.x; S.z=r.z-1; S.h=0; S.hold=0; S.turn=0; S.zone=''; S.falling=[]; S.dying=0; S.escape=null; S.room=null; S.consumed=0;
-  S.stranded=false; S.stagger=0; S.grace=0; S.playT=0; S.ammo=AMMO_MAX; S.reloading=false; S.reload=0; S.fireT=0; S.recoil=0; S.flash=0; S.holding=false; S.route=[];
+  S.stranded=false; S.stagger=0; S.grace=0; S.playT=0; S.reserve=Math.max(0,(LEVEL.shells||0)-CLIP); S.ammo=Math.min(CLIP,LEVEL.shells||0); S.reloading=false; S.reload=0; S.fireT=0; S.recoil=0; S.flash=0; S.holding=false; S.route=[];
   resetPursuer(); renderShells(); FX.reset();
   postMat.uniforms.fade.value=0;
   $('death').hidden=true; $('death').classList.remove('show'); $('win').hidden=true;
@@ -619,7 +636,8 @@ function renderPips(){
 }
 function renderShells(){
   const p=$('shells'); p.innerHTML='';
-  for(let i=0;i<AMMO_MAX;i++){const s=document.createElement('span');s.className='shell'+(i<S.ammo?'':' off');p.appendChild(s);}
+  for(let i=0;i<CLIP;i++){const s=document.createElement('span');s.className='shell'+(i<S.ammo?'':' off');p.appendChild(s);}
+  $('reserve').textContent='×'+S.reserve;
   $('ammo').classList.toggle('reloading',S.reloading);
 }
 let capTimer=0, nameTimer=0;
@@ -692,7 +710,7 @@ function setStranded(on){
   S.stranded=on;
 }
 function startReload(){
-  if(S.reloading||S.ammo>=AMMO_MAX) return;
+  if(S.reloading||S.ammo>=CLIP||S.reserve<=0) return;
   S.reloading=true; S.reload=RELOAD_T; audio.reload(); renderShells();
 }
 // Fires along the facing direction. A hit staggers and then slows the pursuer; it can never be killed.
@@ -707,7 +725,8 @@ function fire(){
       P.state='stagger'; P.stagger=3; P.slow=6; P.x+=dx/d*1.2; P.z+=dz/d*1.2; audio.thud();
     }
   }
-  if(S.ammo<=0) startReload(); else renderShells();
+  if(S.ammo<=0) startReload();   // a no-op once the reserve is empty
+  renderShells();
 }
 function finishDeath(){
   $('death').hidden=false; requestAnimationFrame(()=>requestAnimationFrame(()=>$('death').classList.add('show')));
@@ -778,7 +797,7 @@ function update(dt,time){
 
   // shotgun timers
   S.fireT=Math.max(0,S.fireT-dt); S.recoil=Math.max(0,S.recoil-dt*4); S.flash=Math.max(0,S.flash-dt);
-  if(S.reloading){ S.reload-=dt; if(S.reload<=0){ S.reloading=false; S.ammo=AMMO_MAX; audio.reload(); renderShells(); } }
+  if(S.reloading){ S.reload-=dt; if(S.reload<=0){ S.reloading=false; const n=Math.min(CLIP-S.ammo,S.reserve); S.ammo+=n; S.reserve-=n; audio.reload(); renderShells(); } }
   if(S.mode==='play'){ S.stagger=Math.max(0,S.stagger-dt); S.grace=Math.max(0,S.grace-dt); }
 
   let moving=0;
