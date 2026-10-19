@@ -191,7 +191,16 @@ const M = {
   coat: lam(0x5a4d58,TX.cloth), dark: lam(0x2a2428), skin: lam(0xc9b8a2), leather: lam(0x4a3426),
   steel: lam(0x7a7c80), wood: lam(0x5a3a22), flame: glow(0xffb45a), beam: glow(0xd9e6ff),
 };
-M.drown=lam(0x3f4d48,TX.cloth); M.pale=lam(0x9aa89c);
+M.drown=lam(0x3f4d48,TX.cloth); M.pale=lam(0x9aa89c); M.slime=lam(0x34502e);
+// per-room floor inlay: ring + one dot per room number, so the fixed cameras never leave you unsure which room this is
+const sigils={};
+function sigilMat(i){
+  return sigils[i]||(sigils[i]=psx(new T.MeshLambertMaterial({color:0xffffff,map:texImg(32,(x,y)=>{
+    const dx=x-15.5,dy=y-15.5,r=Math.hypot(dx,dy); let v=22+((x*7+y*13)%5);
+    if(r>13&&r<15.5) v=120; else if(r<2.2) v=0;
+    for(let n=0;n<=i;n++){const a=n/(i+1)*Math.PI*2, px=Math.cos(a)*8, py=Math.sin(a)*8; if(Math.hypot(dx-px,dy-py)<2.1) v=130;}
+    return [v*1.0,v*.88,v*.66];
+  })}))); }
 M.beam.transparent=true; M.beam.opacity=.35; M.beam.depthWrite=false; M.beam.blending=T.AdditiveBlending;
 
 /* ---------- Renderer: 320x240 internal, dithered and quantized on the way out ---------- */
@@ -240,6 +249,13 @@ for(let i=0;i<22;i++){
   box(2.2,26,2.2,M.wall,x,9,z,scene);
   const arch=new T.Mesh(new T.ConeGeometry(1.6,3,4),M.wall); arch.position.set(x,23.5,z); arch.rotation.y=Math.PI/4; scene.add(arch);
 }
+// a taller, farther second ring so the fog has depth to chew through, and a flat moon behind it
+for(let i=0;i<16;i++){
+  const a=i/16*Math.PI*2+R()*.15, r=64+R()*8, hgt=34+R()*14;
+  box(3,hgt,3,M.wall,Math.cos(a)*r*1.25,hgt/2-6,Math.sin(a)*r*.85,scene);
+}
+const moonDisc=new T.Mesh(new T.CircleGeometry(7,10),glow(0x9fb0d8)); moonDisc.material.fog=false;
+moonDisc.position.set(-60,70,-60); moonDisc.lookAt(0,0,0); scene.add(moonDisc);
 
 /* ---------- Player: hunter's coat, tricorn, double-barrel in a low two-handed carry ---------- */
 const UP=new T.Vector3(0,1,0), _a=new T.Vector3(), _b=new T.Vector3(), _q=new T.Vector3(), _m=new T.Matrix4();
@@ -348,6 +364,10 @@ function buildLevel(){
     const fl=box(.16,.26,.16,M.flame,best[0]*3.7,2.75,best[1]*3.7,g);
     box(.3,.08,.3,M.iron,best[0]*3.7,2.58,best[1]*3.7,g);
     const light=new T.PointLight(0xffa458,1.7,17,1.6); light.position.set(best[0]*3.2,2.9,best[1]*3.2); g.add(light);
+    // identity: a floor inlay whose dot count is the room's number, and a slime band at the waterline
+    const ri=Object.keys(LEVEL.rooms).indexOf(k);
+    const inlay=new T.Mesh(new T.CircleGeometry(1.7,10),sigilMat(ri)); inlay.rotation.x=-Math.PI/2; inlay.position.set(1.9,.02,-1.9); g.add(inlay);
+    box(7.7,.55,7.7,M.slime,0,-3.2,0,g);
     const hatch=box(1.7,.06,1.7,M.iron,0,.03,0,g);
     const beam=new T.Mesh(new T.CylinderGeometry(.75,.9,14,6,1,true),M.beam); beam.position.y=7; beam.visible=false; g.add(beam);
     rooms[k]={key:k,x:d.x,z:d.z,name:d.name,cam:d.cam,group:g,light,flame:fl,base:1.7,hatch,beam,bridges:[],seed:R()*100};
@@ -371,7 +391,11 @@ function buildLevel(){
         sg.userData.t=tc; halves[h].segs.push(sg);
       }
     });
+    // ruined piers under each half: they outlast the span that falls
+    for(const tp of [(tStart+mid)/2,(mid+tEnd)/2]) box(2.1,6,.9,M.base,0,-3.4,tp,g);
     const gate=new T.Group(); gate.position.z=mid; g.add(gate);
+    for(const cx of [-1.1,.1,1.2]){ const lk=Math.round(1.2+R()*1.1); // chains hanging from the lintel
+      for(let q=0;q<lk*3;q++) box(.07,.15,.07,M.iron,cx,3.15-q*.17,0,gate); }
     box(.46,3.3,.46,M.wall,1.75,1.65,0,gate); box(.46,3.3,.46,M.wall,-1.75,1.65,0,gate);
     box(3.96,.46,.56,M.wall,0,3.4,0,gate);
     box(1.3,6,1.3,M.base,0,-3.2,0,gate);
