@@ -1,3 +1,4 @@
+<meta charset="utf-8">
 <title>Seven Gates</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IM+Fell+English+SC&family=IM+Fell+English:ital@0;1&display=swap">
@@ -637,7 +638,7 @@ function renderPips(){
 function renderShells(){
   const p=$('shells'); p.innerHTML='';
   for(let i=0;i<CLIP;i++){const s=document.createElement('span');s.className='shell'+(i<S.ammo?'':' off');p.appendChild(s);}
-  $('reserve').textContent='×'+S.reserve;
+  $('reserve').textContent='\u00d7'+S.reserve;
   $('ammo').classList.toggle('reloading',S.reloading);
 }
 let capTimer=0, nameTimer=0;
