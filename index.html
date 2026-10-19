@@ -222,7 +222,7 @@ scene.fog = new T.Fog(0x060509, 9, 42);
 const camera = new T.PerspectiveCamera(52, 4/3, 0.1, 140);
 scene.add(new T.AmbientLight(0x3a3046, 1.0));
 const moon = new T.DirectionalLight(0x5868a8, .45); moon.position.set(-10,30,-6); scene.add(moon);
-const LP = []; for(let i=0;i<6;i++){ const L=new T.PointLight(0xffa458,0,17,1.6); scene.add(L); LP.push({L,src:null,cur:0}); }
+const LP = []; for(let i=0;i<6;i++){ const L=new T.PointLight(0xffa458,0,17,1.6); scene.add(L); LP.push({L,src:null,k:0}); }
 
 function fit(){
   const w = Math.min(innerWidth, innerHeight*4/3), h = w*3/4;
@@ -232,8 +232,14 @@ function fit(){
 addEventListener('resize',fit); fit();
 
 /* ---------- Static world: water and distant colonnade ---------- */
+// box geometry is shared by dimensions (flagged `shared`, so level rebuilds dispose only per-instance geometry)
+const BOXGEO={};
+function boxGeo(w,h,d,seg){
+  const k=w+','+h+','+d+','+(seg||1);
+  return BOXGEO[k]||(BOXGEO[k]=Object.assign(new T.BoxGeometry(w,h,d,seg||1,1,seg||1),{userData:{shared:true}}));
+}
 function box(w,h,d,mat,x,y,z,parent,seg){
-  const m = new T.Mesh(new T.BoxGeometry(w,h,d,seg||1,1,seg||1),mat);
+  const m = new T.Mesh(boxGeo(w,h,d,seg),mat);
   m.position.set(x,y,z); if(parent) parent.add(m); return m;
 }
 const water = new T.Mesh(new T.PlaneGeometry(160,160,24,24), M.water);
@@ -244,13 +250,6 @@ for(let i=0;i<22;i++){
   box(2.2,26,2.2,M.wall,x,9,z,scene);
   const arch=new T.Mesh(new T.ConeGeometry(1.6,3,4),M.wall); arch.position.set(x,23.5,z); arch.rotation.y=Math.PI/4; scene.add(arch);
 }
-// a taller, farther second ring so the fog has depth to chew through, and a flat moon behind it
-for(let i=0;i<16;i++){
-  const a=i/16*Math.PI*2+R()*.15, r=64+R()*8, hgt=34+R()*14;
-  box(3,hgt,3,M.wall,Math.cos(a)*r*1.25,hgt/2-6,Math.sin(a)*r*.85,scene);
-}
-const moonDisc=new T.Mesh(new T.CircleGeometry(7,10),glow(0x9fb0d8)); moonDisc.material.fog=false;
-moonDisc.position.set(-60,70,-60); moonDisc.lookAt(0,0,0); scene.add(moonDisc);
 
 /* ---------- Player: hunter's coat, tricorn, double-barrel in a low two-handed carry ---------- */
 const UP=new T.Vector3(0,1,0), _a=new T.Vector3(), _b=new T.Vector3(), _q=new T.Vector3(), _m=new T.Matrix4();
@@ -343,12 +342,12 @@ function poseHunter(dt,moving,time){
 /* ---------- Level construction ---------- */
 let level = null;
 function buildLevel(){
-  if(level) scene.remove(level.group);
+  if(level){ scene.remove(level.group); level.group.traverse(o=>{ if(o.geometry && !o.geometry.userData.shared) o.geometry.dispose(); }); }
   const G = new T.Group(); scene.add(G);
   const rooms = {};
   // light sources are plain data; a small fixed pool of real PointLights is moved onto the nearest ones each frame
   // (a constant light count means no shader recompiles, and Step 4's bigger levels cost the same)
-  const lights = []; for(const p of LP){ p.src=null; p.cur=0; p.L.intensity=0; }
+  const lights = []; for(const p of LP){ p.src=null; p.k=0; p.L.intensity=0; }
   const addSrc=(x,y,z,color,range,decay,intensity)=>{ const s={x,y,z,color,range,decay,intensity}; lights.push(s); return s; };
   for(const k in LEVEL.rooms){
     const d = LEVEL.rooms[k];
@@ -394,8 +393,8 @@ function buildLevel(){
     // ruined piers under each half: they outlast the span that falls
     for(const tp of [(tStart+mid)/2,(mid+tEnd)/2]) box(2.1,6,.9,M.base,0,-3.4,tp,g);
     const gate=new T.Group(); gate.position.z=mid; g.add(gate);
-    for(const cx of [-1.1,.1,1.2]){ const lk=Math.round(1.2+R()*1.1); // chains hanging from the lintel
-      for(let q=0;q<lk*3;q++) box(.07,.15,.07,M.iron,cx,3.15-q*.17,0,gate); }
+    for(const cx of [-1.1,.1,1.2]){ const len=(Math.round(1.2+R()*1.1)*3)*.17; // chains hanging from the lintel
+      box(.07,len,.07,M.iron,cx,3.2-len/2,0,gate); }
     box(.46,3.3,.46,M.wall,1.75,1.65,0,gate); box(.46,3.3,.46,M.wall,-1.75,1.65,0,gate);
     box(3.96,.46,.56,M.wall,0,3.4,0,gate);
     box(1.3,6,1.3,M.base,0,-3.2,0,gate);
@@ -421,12 +420,26 @@ function buildLevel(){
   });
   level={group:G,rooms,bridges,lights,total:bridges.length};
 }
+// scratch buffers: the nearest sources and their scores, reused every frame
+const _wantS=[], _wantD=[];
 function updateLights(dt){
-  const want=level.lights.map(s=>({s,d:Math.hypot(s.x-S.x,s.z-S.z)-s.range*.35})).sort((a,b)=>a.d-b.d).slice(0,LP.length).map(o=>o.s);
-  for(const p of LP) if(p.src && !want.includes(p.src)){ p.cur=Math.max(0,p.cur-dt*3); p.L.intensity=p.cur; if(p.cur<=0) p.src=null; }
-  for(const s of want){ if(LP.some(p=>p.src===s)) continue; const p=LP.find(q=>!q.src); if(!p) break;
-    p.src=s; p.cur=0; p.L.position.set(s.x,s.y,s.z); p.L.color.setHex(s.color); p.L.distance=s.range; p.L.decay=s.decay; }
-  for(const p of LP) if(p.src && want.includes(p.src)){ p.cur+=(p.src.intensity-p.cur)*Math.min(1,dt*8); p.L.intensity=p.cur; }
+  const N=LP.length; _wantS.length=0; _wantD.length=0;
+  for(const s of level.lights){
+    const d=Math.hypot(s.x-S.x,s.z-S.z)-s.range*.35; let j=_wantS.length;
+    if(j<N){ _wantS.push(s); _wantD.push(d); } else if(d<_wantD[N-1]){ j=N-1; _wantS[j]=s; _wantD[j]=d; } else continue;
+    for(; j>0 && _wantD[j-1]>_wantD[j]; j--){ const ts=_wantS[j],td=_wantD[j]; _wantS[j]=_wantS[j-1]; _wantD[j]=_wantD[j-1]; _wantS[j-1]=ts; _wantD[j-1]=td; }
+  }
+  for(const p of LP) if(p.src && !_wantS.includes(p.src)){ p.k=Math.max(0,p.k-dt*3); if(p.k<=0) p.src=null; }
+  for(const s of _wantS){
+    let held=false, free=null;
+    for(const p of LP){ if(p.src===s) held=true; else if(!p.src && !free) free=p; }
+    if(held || !free) continue;
+    free.src=s; free.k=0; free.L.color.setHex(s.color); free.L.distance=s.range; free.L.decay=s.decay;
+  }
+  // k only ramps a light in or out when it changes source; settled lights follow src.intensity directly so flicker survives
+  for(const p of LP){ if(!p.src){ p.L.intensity=0; continue; }
+    if(_wantS.includes(p.src)) p.k=Math.min(1,p.k+dt*6);
+    p.L.position.set(p.src.x,p.src.y,p.src.z); p.L.intensity=p.src.intensity*p.k; }
 }
 
 /* ---------- Geometry queries ---------- */
@@ -656,17 +669,17 @@ const FX=(()=>{
     dust:[.22,1.2,1.4,5,.9,.8], chip:[.3,2.5,2.5,16,1.5,0], spray:[.14,5,1.6,15,.8,0], smoke:[.2,.7,.35,-.2,1.3,2.2],
   };
   const geo=new T.BoxGeometry(1,1,1), pool=[], rings=[];
-  for(let i=0;i<96;i++){ const m=new T.Mesh(geo,mats.dust); m.visible=false; scene.add(m); pool.push({m,vx:0,vy:0,vz:0,life:0,max:1,g:0,s:1,grow:0,kind:''}); }
+  for(let i=0;i<192;i++){ const m=new T.Mesh(geo,mats.dust); m.visible=false; scene.add(m); pool.push({m,vx:0,vy:0,vz:0,life:0,max:1,g:0,s:1,grow:0,kind:''}); }
   const rGeo=new T.RingGeometry(.5,.8,8);
   for(let i=0;i<8;i++){ const m=new T.Mesh(rGeo,psx(new T.MeshBasicMaterial({color:0x9ec4c4,transparent:true,opacity:.5,depthWrite:false,side:T.DoubleSide})));
     m.rotation.x=-Math.PI/2; m.visible=false; scene.add(m); rings.push({m,life:0}); }
   let ri=0;
   return {
-    n:0,
     emit(kind,x,y,z,n){
       const [size,up,spread,g,life,grow]=kinds[kind];
       for(let c=0;c<n;c++){
-        const p=pool.find(q=>!q.m.visible)||pool[(ri++)%pool.length];
+        let p=null; for(const q of pool) if(!q.m.visible){ p=q; break; }
+        if(!p) p=pool[(ri++)%pool.length]; // pool full: recycle round-robin
         p.kind=kind; p.m.material=mats[kind]; p.m.visible=true; p.m.position.set(x,y,z);
         p.vx=(Math.random()-.5)*spread; p.vz=(Math.random()-.5)*spread; p.vy=up*(.5+Math.random()*.7);
         p.g=g; p.max=p.life=life*(.7+Math.random()*.6); p.s=size*(.6+Math.random()*.8); p.grow=grow;
@@ -679,7 +692,6 @@ const FX=(()=>{
       for(const p of pool){ if(!p.m.visible) continue;
         p.life-=dt; p.vy-=p.g*dt; p.m.position.x+=p.vx*dt; p.m.position.y+=p.vy*dt; p.m.position.z+=p.vz*dt;
         p.m.scale.setScalar(p.s*(1+p.grow*(p.max-p.life)));
-        if(p.kind==='smoke') p.m.material.opacity=.45;
         if(p.life<=0 || ((p.kind==='spray'||p.kind==='chip') && p.m.position.y<WATER_Y)) p.m.visible=false;
       }
       for(const r of rings){ if(!r.m.visible) continue; r.life-=dt; r.m.scale.addScalar(dt*3.2); r.m.material.opacity=.5*Math.max(0,r.life/1.1); if(r.life<=0) r.m.visible=false; }
@@ -764,7 +776,7 @@ function setCam(zone,pos,look){
   camera.position.set(pos[0],pos[1],pos[2]); camera.lookAt(look[0],look[1],look[2]);
   S.camBase=camera.position.clone();
 }
-let waterStep=-1;
+let waterStep=-1, lastFallSplash=-1;
 function update(dt,time){
   audio.tick();
   // animated scenery
@@ -787,9 +799,9 @@ function update(dt,time){
   for(const f of S.falling){
     if(f.done) continue; if(f.delay>0){f.delay-=dt;continue;}
     if(!f.started){ f.started=true; f.o.getWorldPosition(_wp); FX.emit('dust',_wp.x,_wp.y,_wp.z,4); FX.emit('chip',_wp.x,_wp.y,_wp.z,2); }
-    if(!f.splashed && f.o.position.y<WATER_Y){ f.splashed=true; f.o.getWorldPosition(_wp); FX.splash(_wp.x,_wp.z,8); if(((FX.n++)&1)===0) audio.splash(.6); }
+    if(!f.splashed && f.o.position.y<WATER_Y){ f.splashed=true; f.o.getWorldPosition(_wp); FX.splash(_wp.x,_wp.z,8); if(time-lastFallSplash>.15){ lastFallSplash=time; audio.splash(.6); } }
     f.vy-=16*dt; f.o.position.y+=f.vy*dt; f.o.rotation.x+=f.rx*dt; f.o.rotation.z+=f.rz*dt;
-    if(f.light) f.light.intensity=Math.max(0,f.light.intensity-dt*1.5);
+    if(f.light){ f.light.intensity=Math.max(0,f.light.intensity-dt*1.5); f.light.y=2.55+f.o.position.y; } // the lantern's light falls with the gate
     if(f.o.position.y<-14){f.o.visible=false;f.done=true;}
   }
   FX.update(dt); updateLights(dt);
