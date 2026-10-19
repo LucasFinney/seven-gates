@@ -433,18 +433,36 @@ function buildPursuer(){
   const head=new T.Group(); head.position.set(0,7.35,.25); body.add(head);
   box(.75,.85,.75,M.pale,0,0,0,head);
   box(.14,.1,.1,M.flame,-.2,.08,.38,head); box(.14,.1,.1,M.flame,.2,.08,.38,head);
-  const arms=[-1,1].map(sx=>{
+  const jaw=box(.6,.3,.55,M.pale,0,-.62,.12,head);       // slack lower jaw, hangs open
+  box(.5,.06,.06,M.dark,0,-.47,.4,head);                 // dark mouth gap
+  const arms=[-1,1].map((sx,i)=>{
     const g=new T.Group(); g.position.set(sx*1.1,6.5,0); body.add(g);
-    const m=limb(3.4,.3,M.pale,g); m.rotation.x=Math.PI; // hangs down from the shoulder
+    const len=i?3.4:4.1;                                  // uneven arms: one too long
+    const m=limb(len,.3,M.pale,g); m.rotation.x=Math.PI; // hangs down from the shoulder
+    box(.34,.5,.2,M.pale,0,-len-.2,0,g);                 // splayed hand
     return g;
   });
+  // tattered shroud: strips hanging from the shoulders, swayed each frame
+  const rags=[];
+  for(let i=0;i<7;i++){
+    const g=new T.Group(); g.position.set(-1.1+i*.37,6.3,.55); body.add(g);
+    const len=1.6+R()*2.4; const m=limb(len,.16,M.drown,g); m.scale.z=.35; m.rotation.x=Math.PI;
+    rags.push({g,ph:R()*6});
+  }
+  // weed trailing off the back, drifting in the current
+  const weeds=[];
+  for(let i=0;i<4;i++){
+    const g=new T.Group(); g.position.set(-.5+i*.33,3.2,-.55); body.add(g);
+    const m=limb(2.2+R()*1.5,.12,M.base,g); m.scale.z=.3; m.rotation.x=Math.PI*.9;
+    weeds.push({g,ph:R()*6});
+  }
   root.visible=true;
-  return {root,body,head,arms};
+  return {root,body,head,jaw,arms,rags,weeds};
 }
 const pursuer=buildPursuer(); scene.add(pursuer.root);
 const PUR_CFG=LEVEL.pursuer;
 function resetPursuer(){
-  const P=S.pur={x:PUR_CFG.spawn[0],z:PUR_CFG.spawn[1],state:'dormant',stagger:0,slow:0,pause:0,rise:0,step:0,groan:3};
+  const P=S.pur={x:PUR_CFG.spawn[0],z:PUR_CFG.spawn[1],y:WATER_Y,state:'dormant',stagger:0,slow:0,pause:0,rise:0,step:0,groan:3};
   pursuer.root.position.set(P.x,WATER_Y-8,P.z);
 }
 function updatePursuer(dt,time){
@@ -474,14 +492,23 @@ function updatePursuer(dt,time){
   }
   // look and motion
   P.rise+=((P.state==='dormant'?0:1)-P.rise)*Math.min(1,dt*1.2);
-  pursuer.root.position.set(P.x,WATER_Y-(1-P.rise)*8+Math.sin(time*1.6)*.08,P.z);
+  // it ignores the bridges but not the rooms: over a room footprint it hauls itself up onto the floor
+  // instead of clipping through the base; the contact rule is untouched (still planar distance)
+  let onRoom=false;
+  for(const k in level.rooms){const r=level.rooms[k]; if(Math.abs(P.x-r.x)<H+.5&&Math.abs(P.z-r.z)<H+.5){onRoom=true;break;}}
+  P.y+=((onRoom?0:WATER_Y)-P.y)*Math.min(1,dt*4);
+  const tt=Math.floor(time*12)/12; // stepped animation clock: low-framerate PS1 keyframes
+  pursuer.root.position.set(P.x,P.y-(1-P.rise)*8+Math.sin(tt*1.6)*.08,P.z);
   pursuer.root.rotation.y=Math.atan2(dx,dz);
   const sag = P.stagger>0 ? -.22 : .1;
   pursuer.body.rotation.x += (sag-pursuer.body.rotation.x)*Math.min(1,dt*6);
-  const sw=Math.sin(time*2.2);
+  const sw=Math.sin(tt*2.2);
   pursuer.arms[0].rotation.x=sw*.18+(P.state==='hunt'?-.5:0);
   pursuer.arms[1].rotation.x=-sw*.18+(P.state==='hunt'?-.5:0);
-  pursuer.head.rotation.z=Math.sin(time*1.1)*.12;
+  pursuer.head.rotation.z=Math.sin(tt*1.1)*.12;
+  pursuer.jaw.rotation.x=.25+Math.sin(tt*3.1)*.12+(P.state==='hunt'?.25:0);
+  for(const r of pursuer.rags){ r.g.rotation.x=Math.sin(tt*2.6+r.ph)*.18; r.g.rotation.z=Math.sin(tt*1.7+r.ph*2)*.12; }
+  for(const w of pursuer.weeds){ w.g.rotation.x=Math.sin(tt*1.9+w.ph)*.25; w.g.rotation.z=Math.sin(tt*1.3+w.ph*2)*.2; }
 }
 
 /* ---------- Audio ---------- */
@@ -754,5 +781,8 @@ function frame(now){
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
+// debug only: advance n fixed frames synchronously and draw once (rAF is paused while the page is hidden)
+if(window.SG){ let dbgT=0; SG.step=(n,dt)=>{ dt=dt||1/60; for(let i=0;i<n;i++){ dbgT+=dt; update(dt,100+dbgT); }
+  renderer.setRenderTarget(RT); renderer.render(scene,camera); renderer.setRenderTarget(null); renderer.render(post,postCam); }; }
 })();
 </script>
