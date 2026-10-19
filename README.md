@@ -16,10 +16,12 @@ Open `index.html` in a desktop browser. A keyboard is required.
 | Shift | Run |
 | Q | Quick turn |
 | E / Space | Use (hold to turn a valve) |
+| F | Fire the shotgun |
+| R | Reload |
 | M | Developer map |
 
 ## Status
 
-Early prototype. The core loop works: tank controls, fixed cameras, valves, collapsing bridges and stranded detection. The pursuer, the full level sequence and the explainer are still to come.
+Early prototype. The core loop works: tank controls, fixed cameras, valves, collapsing bridges and stranded detection. A pursuer wades through the water and a shotgun can stagger it. The pursuer kills only when you are stranded. The full level sequence and the explainer are still to come.
 
 Built with [Three.js](https://threejs.org/) r128. No build step.
